@@ -1,0 +1,9 @@
+# Top-level deps only — avoid fully pinned locks.
+# HF Spaces also installs gradio[oauth,mcp], which requires pydantic<=2.12.5.
+gradio>=6.22.0
+strands-agents[openai]>=1.50.2
+python-dotenv>=1.2.2
+pydantic>=2.11.10,<=2.12.5
+markdown>=3.10.0
+chromadb>=1.5.9
+huggingface-hub>=1.26.1
