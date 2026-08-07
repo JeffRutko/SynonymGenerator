@@ -4,7 +4,9 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Conceptual Search Helper</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
+
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&family=Outfit:wght@400;500;600&display=swap"
@@ -42,7 +44,7 @@
             id="context"
             name="context"
             rows="3"
-            placeholder="H04W CPC Classification area"
+            placeholder="H04W, H04L and H04B7"
           ></textarea>
         </label>
         <div class="actions">
@@ -50,10 +52,11 @@
             Generate search help
           </button>
           <div class="examples" role="group" aria-label="Examples">
-            <button type="button" class="btn-ghost example" data-concept="the base station transmits a packet to a UE" data-context="H04W CPC Classification area">
+            <span class="examples-label">Try an example:</span>
+            <button type="button" class="btn-ghost example" data-concept="the base station transmits a packet to a UE" data-context="H04W, H04L and H04B7">
               Packet to UE
             </button>
-            <button type="button" class="btn-ghost example" data-concept="coordinated multipoint handoff in cellular networks" data-context="H04W CPC Classification area">
+            <button type="button" class="btn-ghost example" data-concept="coordinated multipoint handoff in cellular networks" data-context="H04W, H04L and H04B7">
               CoMP handoff
             </button>
           </div>

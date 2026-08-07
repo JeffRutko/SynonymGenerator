@@ -162,7 +162,14 @@ textarea:focus {
 .examples {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 0.45rem;
+}
+
+.examples-label {
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+  margin-right: 0.15rem;
 }
 
 .panel {
