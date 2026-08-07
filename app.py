@@ -1,120 +1,76 @@
-import markdown
-import gradio as gr
+"""Conceptual Search Helper — FastAPI + SSE UI."""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+from fastapi import FastAPI
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+
+load_dotenv()
 
 from synonym_agent import generate_synonyms_stream
 
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-EXAMPLE_CONCEPT = "the base station transmits a packet to a UE"
-EXAMPLE_CONTEXT = "H04W CPC Classification area"
-
-# Fixed-pixel inner scroller — HF Spaces iframes often won't grow, so page
-# scroll fails. Do not use vh/% heights (breaks fullscreen + iframe resize).
-RESULTS_CSS = """
-#results-scroll {
-  height: 520px;
-  overflow-y: scroll;
-  overflow-x: auto;
-  padding: 16px 16px 96px 16px;
-  box-sizing: border-box;
-  border: 1px solid rgba(128, 128, 128, 0.4);
-  border-radius: 8px;
-  text-align: left;
-}
-#results-scroll table {
-  border-collapse: collapse;
-  width: 100%;
-  margin: 0.75rem 0;
-}
-#results-scroll th,
-#results-scroll td {
-  border: 1px solid rgba(128, 128, 128, 0.35);
-  padding: 0.35rem 0.55rem;
-}
-#results-scroll pre {
-  overflow-x: auto;
-  padding: 0.75rem;
-  border-radius: 6px;
-  background: rgba(127, 127, 127, 0.12);
-}
-"""
+app = FastAPI(title="Conceptual Search Helper")
 
 
-def render_results_html(answer_md: str) -> str:
-    if not answer_md.strip():
-        body = "<p><em>Results will appear here…</em></p>"
-    else:
-        body = markdown.markdown(
-            answer_md,
-            extensions=["tables", "fenced_code", "sane_lists", "nl2br"],
-        )
-    # Inline styles so HF Spaces / Gradio scoping cannot drop the scrollbar.
-    return f"""
-<div id="results-scroll" style="
-  height: 520px;
-  overflow-y: scroll;
-  overflow-x: auto;
-  padding: 16px 16px 96px 16px;
-  box-sizing: border-box;
-  border: 1px solid rgba(128, 128, 128, 0.4);
-  border-radius: 8px;
-  text-align: left;
-">{body}</div>
-"""
+class SearchRequest(BaseModel):
+    concept: str = Field(..., min_length=1)
+    context: str = ""
 
 
-async def run_synonym_search(concept: str, context: str):
-    async for progress, answer in generate_synonyms_stream(
-        concept or "", context or ""
-    ):
-        yield progress, render_results_html(answer)
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
 
 
-with gr.Blocks(title="Conceptual Search Helper") as demo:
-    gr.Markdown(
-        """
-        # Conceptual Search Helper
+@app.post("/v1/search")
+async def search(body: SearchRequest) -> StreamingResponse:
+    async def event_stream():
+        async for progress, answer in generate_synonyms_stream(
+            body.concept.strip(),
+            (body.context or "").strip(),
+        ):
+            payload = json.dumps(
+                {"progress": progress, "answer": answer},
+                ensure_ascii=False,
+            )
+            yield f"data: {payload}\n\n"
+        yield 'data: {"done": true}\n\n'
 
-        Enter a technical concept or phrase. The agent uses patent and telecom
-        search tools plus retrieval to propose synonyms, **CPC subgroups**, and
-        Boolean search strings you can reuse in literature or patent databases.
-        """
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
-    with gr.Row():
-        concept = gr.Textbox(
-            label="Concept / phrase",
-            placeholder=EXAMPLE_CONCEPT,
-            lines=3,
-            scale=3,
-        )
-        context = gr.Textbox(
-            label="Optional domain / CPC hint",
-            placeholder=EXAMPLE_CONTEXT,
-            lines=3,
-            scale=2,
-        )
 
-    gr.Examples(
-        examples=[
-            [EXAMPLE_CONCEPT, EXAMPLE_CONTEXT],
-            [
-                "coordinated multipoint handoff in cellular networks",
-                "H04W CPC Classification area",
-            ],
-        ],
-        inputs=[concept, context],
-    )
+@app.get("/")
+def index() -> FileResponse:
+    return FileResponse(STATIC_DIR / "index.html")
 
-    submit = gr.Button("Generate search help", variant="primary")
-    progress = gr.Markdown(label="Progress", container=True)
-    results = gr.HTML(label="Results", container=True)
 
-    submit.click(
-        fn=run_synonym_search,
-        inputs=[concept, context],
-        outputs=[progress, results],
-    )
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 if __name__ == "__main__":
-    demo.launch(css=RESULTS_CSS)
+    import uvicorn
+
+    # Default to loopback so browsers get a valid URL (0.0.0.0 is not navigable).
+    # Set HOST=0.0.0.0 for container/Railway deploys.
+    host = os.environ.get("HOST", "127.0.0.1")
+    port = int(os.environ.get("PORT", "7860"))
+    open_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+    print(f"Open http://{open_host}:{port}", flush=True)
+    uvicorn.run("app:app", host=host, port=port, reload=True)

@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Conceptual Search Helper</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&family=Outfit:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js" defer></script>
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body>
+    <div class="atmosphere" aria-hidden="true"></div>
+    <main class="shell">
+      <header class="brand">
+        <p class="brand-mark">Conceptual Search Helper</p>
+        <p class="lede">
+          Synonyms, CPC subgroups, and Boolean strings for telecom and patent
+          concepts — grounded with live search and retrieval.
+        </p>
+      </header>
+
+      <form id="search-form" class="search-form">
+        <label class="field field-concept">
+          <span class="label">Concept / phrase</span>
+          <textarea
+            id="concept"
+            name="concept"
+            rows="3"
+            required
+            placeholder="the base station transmits a packet to a UE"
+          ></textarea>
+        </label>
+        <label class="field field-context">
+          <span class="label">Domain / CPC hint</span>
+          <textarea
+            id="context"
+            name="context"
+            rows="3"
+            placeholder="H04W CPC Classification area"
+          ></textarea>
+        </label>
+        <div class="actions">
+          <button type="submit" id="submit" class="btn-primary">
+            Generate search help
+          </button>
+          <div class="examples" role="group" aria-label="Examples">
+            <button type="button" class="btn-ghost example" data-concept="the base station transmits a packet to a UE" data-context="H04W CPC Classification area">
+              Packet to UE
+            </button>
+            <button type="button" class="btn-ghost example" data-concept="coordinated multipoint handoff in cellular networks" data-context="H04W CPC Classification area">
+              CoMP handoff
+            </button>
+          </div>
+        </div>
+      </form>
+
+      <section class="panel progress-panel" aria-live="polite">
+        <h2>Progress</h2>
+        <div id="progress" class="progress-body">
+          <p class="muted">Waiting for a search…</p>
+        </div>
+      </section>
+
+      <section class="panel results-panel">
+        <h2>Results</h2>
+        <div id="results" class="results-scroll">
+          <p class="muted">Results will appear here…</p>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
