@@ -1,52 +1,94 @@
-"""Hugging Face Inference embeddings for RAG."""
+"""Cohere MCP embeddings for RAG."""
 
 from __future__ import annotations
 
-import os
-from typing import Sequence
+import json
+import uuid
+from typing import Any, Sequence
 
-from huggingface_hub import InferenceClient
+from strands.tools.mcp import MCPClient
 
-EMBEDDING_MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
+MAX_EMBED_BATCH = 96
+EMBED_TOOL = "embed_texts"
 
 
-def embed_texts(texts: Sequence[str]) -> list[list[float]]:
-    """Embed texts via HF Inference feature-extraction. Raises on API failure."""
+def embed_texts(
+    mcp_client: MCPClient,
+    texts: Sequence[str],
+    *,
+    input_type: str = "search_document",
+) -> list[list[float]]:
+    """Embed texts via Cohere MCP ``embed_texts``. Raises on API failure."""
     if not texts:
         return []
 
-    token = os.environ.get("HF_TOKEN")
-    if not token:
-        raise RuntimeError("HF_TOKEN is required for embeddings")
-
-    client = InferenceClient(provider="hf-inference", api_key=token)
     vectors: list[list[float]] = []
-    for text in texts:
-        raw = client.feature_extraction(text, model=EMBEDDING_MODEL_ID)
-        vectors.append(_to_1d(raw))
+    for start in range(0, len(texts), MAX_EMBED_BATCH):
+        batch = [t.strip() for t in texts[start : start + MAX_EMBED_BATCH]]
+        if any(not t for t in batch):
+            raise ValueError("embed_texts requires non-empty strings")
+        result = mcp_client.call_tool_sync(
+            tool_use_id=str(uuid.uuid4()),
+            name=EMBED_TOOL,
+            arguments={"texts": batch, "input_type": input_type},
+        )
+        payload = _tool_result_to_dict(result)
+        if "error" in payload:
+            raise RuntimeError(f"embed_texts failed: {payload['error']}")
+        embeddings = payload.get("embeddings")
+        if not isinstance(embeddings, list) or len(embeddings) != len(batch):
+            raise ValueError(
+                f"Unexpected embeddings payload: got {type(embeddings)!r} "
+                f"len={len(embeddings) if isinstance(embeddings, list) else 'n/a'}, "
+                f"expected {len(batch)}"
+            )
+        for row in embeddings:
+            if not isinstance(row, (list, tuple)) or not row:
+                raise ValueError(f"Unexpected embedding row type: {type(row)!r}")
+            vectors.append([float(x) for x in row])
     return vectors
 
 
-def _to_1d(raw: object) -> list[float]:
-    """Normalize nested feature-extraction output to a single vector."""
-    if hasattr(raw, "tolist"):
-        raw = raw.tolist()  # type: ignore[assignment]
+def _tool_result_to_dict(result: Any) -> dict[str, Any]:
+    """Parse MCP tool result into a dict (structured content or JSON text)."""
+    structured = getattr(result, "structuredContent", None) or getattr(
+        result, "structured_content", None
+    )
+    if structured is None and isinstance(result, dict):
+        structured = result.get("structuredContent") or result.get(
+            "structured_content"
+        )
+    if isinstance(structured, dict):
+        return structured
 
-    if not isinstance(raw, (list, tuple)) or not raw:
-        raise ValueError(f"Unexpected embedding payload type: {type(raw)!r}")
+    content = getattr(result, "content", None)
+    if content is None and isinstance(result, dict):
+        content = result.get("content")
 
-    first = raw[0]
-    if isinstance(first, (int, float)):
-        return [float(x) for x in raw]
+    texts: list[str] = []
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("text"):
+                texts.append(str(block["text"]))
+            elif hasattr(block, "text") and getattr(block, "text"):
+                texts.append(str(block.text))
+    elif isinstance(content, str):
+        texts.append(content)
 
-    # Token-level matrix → mean pool
-    if isinstance(first, (list, tuple)):
-        dim = len(first)
-        acc = [0.0] * dim
-        for row in raw:
-            for i, v in enumerate(row):
-                acc[i] += float(v)
-        n = float(len(raw))
-        return [v / n for v in acc]
+    for text in texts:
+        text = text.strip()
+        if not text:
+            continue
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
 
-    raise ValueError(f"Unexpected embedding row type: {type(first)!r}")
+    if isinstance(result, dict) and (
+        "embeddings" in result or "error" in result or "results" in result
+    ):
+        return result
+
+    raise ValueError(f"Could not parse MCP tool result as dict: {result!r}")

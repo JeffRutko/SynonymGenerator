@@ -12,9 +12,9 @@
       href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&family=Outfit:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=2" />
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js" defer></script>
-    <script src="/static/app.js" defer></script>
+    <script src="/static/app.js?v=2" defer></script>
   </head>
   <body>
     <div class="atmosphere" aria-hidden="true"></div>
@@ -63,19 +63,21 @@
         </div>
       </form>
 
-      <section class="panel progress-panel" aria-live="polite">
-        <h2>Progress</h2>
-        <div id="progress" class="progress-body">
-          <p class="muted">Waiting for a search…</p>
-        </div>
-      </section>
+      <div class="workspace">
+        <section class="panel progress-panel" aria-live="polite">
+          <h2>Progress</h2>
+          <div id="progress" class="progress-body">
+            <p class="muted">Waiting for a search…</p>
+          </div>
+        </section>
 
-      <section class="panel results-panel">
-        <h2>Results</h2>
-        <div id="results" class="results-scroll">
-          <p class="muted">Results will appear here…</p>
-        </div>
-      </section>
+        <section class="panel results-panel">
+          <h2>Results</h2>
+          <div id="results" class="results-scroll">
+            <p class="muted">Results will appear here…</p>
+          </div>
+        </section>
+      </div>
     </main>
   </body>
 </html>

@@ -29,11 +29,13 @@ Defaults: `HOST=127.0.0.1`, `PORT=7860`. For container deploys set `HOST=0.0.0.0
 |------|----------|--------|
 | `HF_TOKEN` | Yes | Hugging Face Inference Router / model used in `models/models.py` |
 
-The MCP search server URL and model ID live in `models/models.py`.
+MCP server URLs (search + Cohere embed/rerank) and the model ID live in
+`models/models.py`.
 
 Each request gathers MCP search hits, chunks them (~500 chars, **15% overlap**),
-embeds with MiniLM via HF Inference, retrieves top passages from an **ephemeral**
-Chroma collection, then runs the Strands agent grounded on that context.
+embeds and reranks via the Cohere MCP tools (`embed_texts`, `rerank_documents`),
+retrieves top passages from an **ephemeral** Chroma collection, then runs the
+Strands agent grounded on that context.
 
 CLI smoke test:
 

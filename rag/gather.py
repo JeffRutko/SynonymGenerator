@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from strands.tools.mcp import MCPClient
@@ -11,31 +12,61 @@ from strands.tools.mcp import MCPClient
 from rag.chunking import TextChunk, chunk_text
 
 GATHER_TOOLS = ("telecom_search", "patent_search", "web_text_search")
+ProgressCallback = Callable[[str], None]
 
 
-def gather_mcp_documents(
+def iter_gather_mcp_documents(
     mcp_client: MCPClient,
     concept: str,
     context: str = "",
-) -> list[TextChunk]:
-    """Call search tools and return chunked passages ready to index."""
+) -> Iterator[str | list[TextChunk]]:
+    """
+    Yield progress strings while gathering, then the chunk list.
+
+    Final yield is always ``list[TextChunk]``.
+    """
     query = _build_search_query(concept, context)
     chunks: list[TextChunk] = []
     for tool_name in GATHER_TOOLS:
+        yield f"Calling search tool: `{tool_name}`…"
+        before = len(chunks)
         try:
             result = mcp_client.call_tool_sync(
                 tool_use_id=str(uuid.uuid4()),
                 name=tool_name,
                 arguments={"query": query},
             )
-        except Exception:
+        except Exception as exc:
+            yield f"`{tool_name}` failed ({exc}); skipping."
             continue
         text = _tool_result_to_text(result)
         if not text:
+            yield f"`{tool_name}` returned no text."
             continue
         chunks.extend(
             chunk_text(text, source_tool=tool_name, query=query)
         )
+        yield (
+            f"`{tool_name}` → {len(chunks) - before} chunks "
+            f"({len(chunks)} total)."
+        )
+    yield chunks
+
+
+def gather_mcp_documents(
+    mcp_client: MCPClient,
+    concept: str,
+    context: str = "",
+    *,
+    on_progress: ProgressCallback | None = None,
+) -> list[TextChunk]:
+    """Call search tools and return chunked passages ready to index."""
+    chunks: list[TextChunk] = []
+    for item in iter_gather_mcp_documents(mcp_client, concept, context):
+        if isinstance(item, list):
+            chunks = item
+        elif on_progress:
+            on_progress(item)
     return chunks
 
 

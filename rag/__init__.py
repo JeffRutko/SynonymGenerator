@@ -2,7 +2,8 @@
 
 from rag.chunking import TextChunk, chunk_text
 from rag.embeddings import embed_texts
-from rag.gather import gather_mcp_documents
+from rag.gather import gather_mcp_documents, iter_gather_mcp_documents
+from rag.rerank import rerank_documents
 from rag.store import EphemeralRagStore, RetrievedChunk
 
 __all__ = [
@@ -11,7 +12,9 @@ __all__ = [
     "TextChunk",
     "chunk_text",
     "embed_texts",
+    "rerank_documents",
     "gather_mcp_documents",
+    "iter_gather_mcp_documents",
     "format_retrieved_passages",
     "build_rag_prompt",
 ]
