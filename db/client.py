@@ -3,13 +3,9 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
 
 from models import models
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
-
-if TYPE_CHECKING:
-    from pymongo.errors import PyMongoError
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +17,16 @@ CHUNK_VECTORS = "chunk_vectors"
 SYNONYM_OUTPUTS = "synonym_outputs"
 
 
+def _reset_client() -> None:
+    global _client
+    if _client is not None:
+        try:
+            _client.close()
+        except Exception:
+            pass
+        _client = None
+
+
 async def connect() -> None:
     """Open the Motor client and ensure collection indexes."""
     global _client
@@ -29,22 +35,27 @@ async def connect() -> None:
     if _client is not None:
         return
 
-    _client = AsyncIOMotorClient(
+    client = AsyncIOMotorClient(
         models.MONGODB_URI,
         serverSelectionTimeoutMS=SERVER_SELECTION_TIMEOUT_MS,
     )
-    await _client.admin.command("ping")
-    await _ensure_indexes()
-    logger.info("MongoDB connected (database=%s)", models.MONGODB_DB_NAME)
+    try:
+        await client.admin.command("ping")
+        _client = client
+        await _ensure_indexes()
+        logger.info("MongoDB connected (database=%s)", models.MONGODB_DB_NAME)
+    except Exception:
+        try:
+            client.close()
+        except Exception:
+            pass
+        _client = None
+        raise
 
 
 async def disconnect() -> None:
     """Close the Motor client."""
-    global _client
-    if _client is None:
-        return
-    _client.close()
-    _client = None
+    _reset_client()
 
 
 def get_client() -> AsyncIOMotorClient:
@@ -58,15 +69,20 @@ def get_db() -> AsyncIOMotorDatabase:
 
 
 async def ping() -> bool:
-    """Return True if MongoDB is reachable."""
+    """Return True if MongoDB is reachable (retries connect if needed)."""
     if not models.MONGODB_ENABLED:
         return False
     if _client is None:
-        return False
+        try:
+            await connect()
+        except Exception as exc:
+            logger.warning("MongoDB reconnect failed: %s", exc)
+            return False
     try:
         await _client.admin.command("ping")
         return True
     except Exception:
+        _reset_client()
         return False
 
 

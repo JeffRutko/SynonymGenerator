@@ -152,5 +152,7 @@ confirm MongoDB caching (second run should be much faster).
 | `disabled` | `MONGODB_URI` not set on Railway |
 | `error` | Atlas network/auth failure — check Railway logs and Atlas IP allowlist |
 
+**`No replica set members found yet` / `ReplicaSetNoPrimary` with `server_type: Unknown`:** Railway cannot open TCP to Atlas (almost always Network Access). In Atlas → **Network Access** → **Add IP Address** → allow `0.0.0.0/0` (or your Railway static egress IPs), wait a minute, then redeploy or hit `/health` again. Also confirm `MONGODB_URI` is the full `mongodb+srv://…` string and the DB user password has no unescaped special characters.
+
 MCP servers (search + Cohere embed) and the HF model ID are configured in
 [`models/models.py`](models/models.py); they require outbound HTTPS from Railway.
