@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-
-import chromadb
-from strands.tools.mcp import MCPClient
+from typing import TYPE_CHECKING
 
 from rag.chunking import TextChunk
 from rag.embeddings import embed_texts
 from rag.rerank import rerank_documents
+
+if TYPE_CHECKING:
+    from strands.tools.mcp import MCPClient
 
 DEFAULT_SHORTLIST = 24
 
@@ -27,6 +28,9 @@ class EphemeralRagStore:
     """In-memory Chroma collection for a single request."""
 
     def __init__(self, mcp_client: MCPClient) -> None:
+        # Lazy: chromadb/onnxruntime are heavy; skip import when Mongo RAG is used.
+        import chromadb
+
         self._mcp = mcp_client
         self._client = chromadb.EphemeralClient()
         self._collection = self._client.create_collection(

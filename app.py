@@ -18,7 +18,6 @@ load_dotenv()
 
 from db import client as db_client
 from models import models
-from synonym_agent import generate_synonyms_stream
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +58,9 @@ async def health() -> dict[str, str]:
 
 @app.post("/v1/search")
 async def search(body: SearchRequest) -> StreamingResponse:
+    # Import on demand so /health can pass without loading strands/chromadb.
+    from synonym_agent import generate_synonyms_stream
+
     async def event_stream():
         async for progress, answer in generate_synonyms_stream(
             body.concept.strip(),

@@ -95,8 +95,9 @@ curl -s http://127.0.0.1:7860/health
 
 ## Deploy (Railway)
 
-The repo includes [`railway.toml`](railway.toml) and [`Procfile`](Procfile). Railway
-Nixpacks installs from [`requirements.txt`](requirements.txt) and starts:
+The repo includes [`railway.toml`](railway.toml), [`nixpacks.toml`](nixpacks.toml),
+and [`Procfile`](Procfile). Nixpacks installs from [`requirements.txt`](requirements.txt)
+(not `uv.lock`) and starts:
 
 ```bash
 uvicorn app:app --host 0.0.0.0 --port $PORT
