@@ -3,11 +3,13 @@
 from rag.chunking import TextChunk, chunk_text
 from rag.embeddings import embed_texts
 from rag.gather import gather_mcp_documents, iter_gather_mcp_documents
+from rag.mongo_store import MongoVectorStore
 from rag.rerank import rerank_documents
 from rag.store import EphemeralRagStore, RetrievedChunk
 
 __all__ = [
     "EphemeralRagStore",
+    "MongoVectorStore",
     "RetrievedChunk",
     "TextChunk",
     "chunk_text",

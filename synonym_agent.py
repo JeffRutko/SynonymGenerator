@@ -1,3 +1,5 @@
+import asyncio
+import logging
 import os
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
@@ -12,6 +14,10 @@ from mcp.client.streamable_http import streamable_http_client
 from strands import Agent
 from strands.tools.mcp import MCPClient
 
+from db import client as db_client
+from db.query_key import make_query_key
+from db.repositories import chunk_vectors as chunk_vectors_repo
+from db.repositories import synonym_outputs as synonym_outputs_repo
 from models import models
 from rag import (
     EphemeralRagStore,
@@ -20,6 +26,9 @@ from rag import (
 )
 from rag.chunking import TextChunk
 from rag.gather import iter_gather_mcp_documents
+from rag.mongo_store import MongoVectorStore
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """You are a conceptual search helper for telecom and patent prior-art research.
 
@@ -38,6 +47,11 @@ AGENT_EXCLUDED_TOOLS = frozenset({"embed_texts", "rerank_documents"})
 class RagResult:
     note: str
     passages: str
+
+
+async def _ensure_mongo() -> None:
+    if models.MONGODB_ENABLED:
+        await db_client.connect()
 
 
 def create_mcp_clients() -> list[MCPClient]:
@@ -100,7 +114,6 @@ def _find_client_with_tool(
             name = getattr(tool, "tool_name", None) or getattr(tool, "name", None)
             if name == tool_name:
                 return client
-            # AgentTool / MCPAgentTool may nest the MCP name
             spec = getattr(tool, "tool_spec", None) or getattr(tool, "mcp_tool", None)
             if isinstance(spec, dict) and spec.get("name") == tool_name:
                 return client
@@ -142,21 +155,33 @@ def build_prompt(concept: str, context: str = "", passages: str = "") -> str:
     return build_rag_prompt(concept, context, passages)
 
 
-def iter_rag_pipeline(
+async def iter_rag_pipeline(
     search_client: MCPClient,
     cohere_client: MCPClient,
     concept: str,
     context: str,
-) -> Iterator[str | RagResult]:
+    *,
+    query_key: str | None = None,
+    force_refresh: bool = False,
+) -> AsyncIterator[str | RagResult]:
     """
     Run gather → embed/index → retrieve → rerank.
 
     Yields progress strings in pipeline order, then a final ``RagResult``.
     """
+    if query_key is None:
+        query_key = make_query_key(concept, context)
+
     yield "Gathering search results…"
     chunks: list[TextChunk] = []
     try:
-        for item in iter_gather_mcp_documents(search_client, concept, context):
+        async for item in iter_gather_mcp_documents(
+            search_client,
+            concept,
+            context,
+            query_key=query_key,
+            force_refresh=force_refresh,
+        ):
             if isinstance(item, list):
                 chunks = item
             else:
@@ -172,21 +197,52 @@ def iter_rag_pipeline(
         yield RagResult("No passages indexed; continuing with tools only.", "")
         return
 
-    try:
-        store = EphemeralRagStore(cohere_client)
-        yield (
-            f"Embedding {len(chunks)} chunks via `embed_texts` "
-            f"(input_type=search_document)…"
-        )
-        store.add_chunks(chunks)
-        yield f"Indexed {len(chunks)} chunks in ephemeral store."
+    query = f"{concept.strip()} {context.strip()}".strip()
+    vectors_cached = False
+    if models.MONGODB_ENABLED and force_refresh:
+        deleted = await chunk_vectors_repo.delete_by_query_key(query_key)
+        if deleted:
+            yield f"Cleared {deleted} cached vector(s) (force_refresh)."
+    elif models.MONGODB_ENABLED:
+        vectors_cached = await chunk_vectors_repo.has_vectors(query_key)
 
-        query = f"{concept.strip()} {context.strip()}".strip()
-        yield (
-            "Embedding query via `embed_texts` "
-            "(input_type=search_query)…"
-        )
-        candidates = store.retrieve_shortlist(query, k=8)
+    try:
+        if models.MONGODB_ENABLED:
+            store: MongoVectorStore | EphemeralRagStore = MongoVectorStore(
+                cohere_client,
+                query_key,
+                vectors_cached=vectors_cached,
+            )
+            if vectors_cached:
+                yield f"Using {len(chunks)} cached chunks from MongoDB."
+            else:
+                yield (
+                    f"Embedding {len(chunks)} chunks via `embed_texts` "
+                    f"(input_type=search_document)…"
+                )
+            indexed = await store.add_chunks(chunks)
+            yield f"Indexed {indexed} chunks in MongoDB."
+
+            yield (
+                "Embedding query via `embed_texts` "
+                "(input_type=search_query)…"
+            )
+            candidates = await store.retrieve_shortlist(query, k=8)
+        else:
+            chroma = EphemeralRagStore(cohere_client)
+            yield (
+                f"Embedding {len(chunks)} chunks via `embed_texts` "
+                f"(input_type=search_document)…"
+            )
+            chroma.add_chunks(chunks)
+            store = chroma
+            yield f"Indexed {len(chunks)} chunks in ephemeral store."
+            yield (
+                "Embedding query via `embed_texts` "
+                "(input_type=search_query)…"
+            )
+            candidates = chroma.retrieve_shortlist(query, k=8)
+
         yield f"Retrieved {len(candidates)} vector shortlist candidates."
 
         if not candidates:
@@ -225,15 +281,25 @@ def iter_rag_pipeline(
     )
 
 
-def _index_and_retrieve(
+async def _index_and_retrieve(
     search_client: MCPClient,
     cohere_client: MCPClient,
     concept: str,
     context: str,
+    *,
+    query_key: str,
+    force_refresh: bool,
 ) -> tuple[str, str]:
     """Consume the RAG pipeline; return (status_note, passages)."""
     result: RagResult | None = None
-    for item in iter_rag_pipeline(search_client, cohere_client, concept, context):
+    async for item in iter_rag_pipeline(
+        search_client,
+        cohere_client,
+        concept,
+        context,
+        query_key=query_key,
+        force_refresh=force_refresh,
+    ):
         if isinstance(item, RagResult):
             result = item
     if result is None:
@@ -241,22 +307,64 @@ def _index_and_retrieve(
     return result.note, result.passages
 
 
-def generate_synonyms(concept: str, context: str = "") -> str:
+def generate_synonyms(
+    concept: str,
+    context: str = "",
+    *,
+    force_refresh: bool = False,
+) -> str:
     if not concept.strip():
         return "Please enter a concept or phrase."
 
+    return asyncio.run(
+        _generate_synonyms_async(concept, context, force_refresh=force_refresh)
+    )
+
+
+async def _generate_synonyms_async(
+    concept: str,
+    context: str,
+    *,
+    force_refresh: bool,
+) -> str:
+    await _ensure_mongo()
+    query_key = make_query_key(concept, context)
+
     with mcp_session() as (search_client, cohere_client):
-        _, passages = _index_and_retrieve(
-            search_client, cohere_client, concept, context
+        _, passages = await _index_and_retrieve(
+            search_client,
+            cohere_client,
+            concept,
+            context,
+            query_key=query_key,
+            force_refresh=force_refresh,
         )
         prompt = build_prompt(concept, context, passages)
         agent = create_agent_with_tools(search_client, callback_handler=None)
         result = agent(prompt)
-        return str(result)
+        answer = str(result)
+
+    if models.MONGODB_ENABLED:
+        try:
+            await synonym_outputs_repo.upsert(
+                query_key=query_key,
+                concept=concept,
+                context=context,
+                answer=answer,
+                progress="Done.",
+                tools_used=[],
+            )
+        except Exception as exc:
+            logger.warning("Failed to cache synonym output: %s", exc)
+
+    return answer
 
 
 async def generate_synonyms_stream(
-    concept: str, context: str = ""
+    concept: str,
+    context: str = "",
+    *,
+    force_refresh: bool = False,
 ) -> AsyncIterator[tuple[str, str]]:
     """Yield (progress_markdown, answer_markdown) pairs as the agent runs."""
     if not concept.strip():
@@ -273,6 +381,22 @@ async def generate_synonyms_stream(
         )
         return
 
+    await _ensure_mongo()
+    query_key = make_query_key(concept, context)
+
+    if models.MONGODB_ENABLED and not force_refresh:
+        try:
+            cached = await synonym_outputs_repo.get_cached(query_key)
+        except Exception as exc:
+            logger.warning("Output cache lookup failed: %s", exc)
+            cached = None
+        if cached is not None:
+            progress = cached.progress or "Loaded cached report from MongoDB."
+            if not progress.startswith("- "):
+                progress = f"- {progress}\n- Done."
+            yield (progress, cached.answer)
+            return
+
     status_lines: list[str] = ["Connecting to MCP servers…"]
     answer = ""
     seen_tools: set[str] = set()
@@ -285,8 +409,13 @@ async def generate_synonyms_stream(
     try:
         with mcp_session() as (search_client, cohere_client):
             passages = ""
-            for item in iter_rag_pipeline(
-                search_client, cohere_client, concept, context
+            async for item in iter_rag_pipeline(
+                search_client,
+                cohere_client,
+                concept,
+                context,
+                query_key=query_key,
+                force_refresh=force_refresh,
             ):
                 if isinstance(item, RagResult):
                     status_lines.append(item.note)
@@ -315,6 +444,19 @@ async def generate_synonyms_stream(
 
             status_lines.append("Done.")
             yield progress(), answer
+
+            if models.MONGODB_ENABLED:
+                try:
+                    await synonym_outputs_repo.upsert(
+                        query_key=query_key,
+                        concept=concept,
+                        context=context,
+                        answer=answer,
+                        progress=progress(),
+                        tools_used=sorted(seen_tools),
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to cache synonym output: %s", exc)
     except Exception as exc:
         status_lines.append(f"Failed: {exc}")
         yield progress(), answer

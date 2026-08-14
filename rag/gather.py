@@ -4,65 +4,131 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from typing import Any
 
 from strands.tools.mcp import MCPClient
 
+from db.repositories import source_documents as source_documents_repo
+from models import models
 from rag.chunking import TextChunk, chunk_text
-
-GATHER_TOOLS = ("telecom_search", "patent_search", "web_text_search")
+from rag.constants import GATHER_TOOLS
 ProgressCallback = Callable[[str], None]
 
 
-def iter_gather_mcp_documents(
+async def iter_gather_mcp_documents(
     mcp_client: MCPClient,
     concept: str,
     context: str = "",
-) -> Iterator[str | list[TextChunk]]:
+    *,
+    query_key: str | None = None,
+    force_refresh: bool = False,
+) -> AsyncIterator[str | list[TextChunk]]:
     """
     Yield progress strings while gathering, then the chunk list.
 
     Final yield is always ``list[TextChunk]``.
     """
     query = _build_search_query(concept, context)
+    use_cache = (
+        models.MONGODB_ENABLED
+        and query_key is not None
+        and not force_refresh
+    )
     chunks: list[TextChunk] = []
+
     for tool_name in GATHER_TOOLS:
-        yield f"Calling search tool: `{tool_name}`…"
         before = len(chunks)
-        try:
-            result = mcp_client.call_tool_sync(
-                tool_use_id=str(uuid.uuid4()),
-                name=tool_name,
-                arguments={"query": query},
+        raw_text: str | None = None
+
+        if use_cache:
+            raw_text = await source_documents_repo.get_cached_raw_text(
+                query_key, tool_name
             )
-        except Exception as exc:
-            yield f"`{tool_name}` failed ({exc}); skipping."
-            continue
-        text = _tool_result_to_text(result)
-        if not text:
-            yield f"`{tool_name}` returned no text."
-            continue
+            if raw_text:
+                yield f"Using cached `{tool_name}`…"
+
+        if raw_text is None:
+            yield f"Calling search tool: `{tool_name}`…"
+            try:
+                result = mcp_client.call_tool_sync(
+                    tool_use_id=str(uuid.uuid4()),
+                    name=tool_name,
+                    arguments={"query": query},
+                )
+            except Exception as exc:
+                yield f"`{tool_name}` failed ({exc}); skipping."
+                continue
+            raw_text = _tool_result_to_text(result)
+            if not raw_text:
+                yield f"`{tool_name}` returned no text."
+                continue
+            if models.MONGODB_ENABLED and query_key is not None:
+                await source_documents_repo.upsert(
+                    query_key=query_key,
+                    concept=concept,
+                    context=context,
+                    tool_name=tool_name,
+                    raw_text=raw_text,
+                )
+
         chunks.extend(
-            chunk_text(text, source_tool=tool_name, query=query)
+            chunk_text(raw_text, source_tool=tool_name, query=query)
         )
+        added = len(chunks) - before
         yield (
-            f"`{tool_name}` → {len(chunks) - before} chunks "
+            f"`{tool_name}` → {added} chunks "
             f"({len(chunks)} total)."
         )
+
     yield chunks
 
 
-def gather_mcp_documents(
+def iter_gather_mcp_documents_sync(
     mcp_client: MCPClient,
     concept: str,
     context: str = "",
     *,
+    query_key: str | None = None,
+    force_refresh: bool = False,
+) -> Iterator[str | list[TextChunk]]:
+    """Sync wrapper for the async gather iterator."""
+    import asyncio
+
+    async def _collect() -> list[str | list[TextChunk]]:
+        items: list[str | list[TextChunk]] = []
+        async for item in iter_gather_mcp_documents(
+            mcp_client,
+            concept,
+            context,
+            query_key=query_key,
+            force_refresh=force_refresh,
+        ):
+            items.append(item)
+        return items
+
+    for item in asyncio.run(_collect()):
+        yield item
+
+
+async def gather_mcp_documents(
+    mcp_client: MCPClient,
+    concept: str,
+    context: str = "",
+    *,
+    query_key: str | None = None,
+    force_refresh: bool = False,
     on_progress: ProgressCallback | None = None,
 ) -> list[TextChunk]:
     """Call search tools and return chunked passages ready to index."""
     chunks: list[TextChunk] = []
-    for item in iter_gather_mcp_documents(mcp_client, concept, context):
+    async for item in iter_gather_mcp_documents(
+        mcp_client,
+        concept,
+        context,
+        query_key=query_key,
+        force_refresh=force_refresh,
+    ):
         if isinstance(item, list):
             chunks = item
         elif on_progress:

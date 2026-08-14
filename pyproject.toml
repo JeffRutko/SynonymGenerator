@@ -10,4 +10,6 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "chromadb>=1.5.9",
     "huggingface-hub>=1.26.1",
+    "motor>=3.7.1",
+    "pymongo[srv]>=4.17.0",
 ]
