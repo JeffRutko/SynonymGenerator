@@ -93,7 +93,63 @@ API smoke check:
 curl -s http://127.0.0.1:7860/health
 ```
 
-## Deploy
+## Deploy (Railway)
 
-Set `MONGODB_URI` on the Railway FastAPI service (Atlas connection string).
-Railway MongoDB plugin is not required.
+The repo includes [`railway.toml`](railway.toml) and [`Procfile`](Procfile). Railway
+Nixpacks installs from [`requirements.txt`](requirements.txt) and starts:
+
+```bash
+uvicorn app:app --host 0.0.0.0 --port $PORT
+```
+
+### 1. Connect GitHub
+
+1. [Railway](https://railway.app) → **New Project** → **Deploy from GitHub repo**
+2. Select `JeffRutko/SynonymGenerator` (branch `master`)
+3. **Settings → Networking** → **Generate Domain** (e.g. `your-app.up.railway.app`)
+
+No Railway MongoDB plugin — use Atlas via `MONGODB_URI`.
+
+### 2. Environment variables
+
+Railway → service → **Variables**:
+
+| Name | Required | Notes |
+|------|----------|-------|
+| `HF_TOKEN` | Yes | Same token used locally |
+| `MONGODB_URI` | Yes | Atlas `mongodb+srv://…` connection string |
+| `MONGODB_DB_NAME` | No | Default `synonym_generator` |
+| `MONGODB_CACHE_TTL_HOURS` | No | Default `168` |
+| `MONGODB_VECTOR_INDEX_NAME` | No | Default `chunk_vectors_vector_index` |
+| `MONGODB_VECTOR_DIMENSIONS` | No | Default `1024` |
+
+Do **not** set `HOST` or `PORT` — the start command already uses `$PORT`.
+
+### 3. Atlas (one-time)
+
+- **Network Access:** allow Railway egress (`0.0.0.0/0` or Railway static IP)
+- **Vector Search index** on `chunk_vectors` — see [Atlas Vector Search index](#atlas-vector-search-index) above
+- DB user in the URI needs read/write on `synonym_generator`
+
+### 4. Verify deploy
+
+```bash
+curl -s https://YOUR-APP.up.railway.app/health
+# {"status":"ok","mongo":"connected"}
+
+uv run python scripts/check_deploy_health.py https://YOUR-APP.up.railway.app
+```
+
+Open `https://YOUR-APP.up.railway.app/`, run a search, then repeat the same query to
+confirm MongoDB caching (second run should be much faster).
+
+### Troubleshooting
+
+| `/health` mongo value | Cause |
+|-----------------------|-------|
+| `connected` | OK |
+| `disabled` | `MONGODB_URI` not set on Railway |
+| `error` | Atlas network/auth failure — check Railway logs and Atlas IP allowlist |
+
+MCP servers (search + Cohere embed) and the HF model ID are configured in
+[`models/models.py`](models/models.py); they require outbound HTTPS from Railway.
