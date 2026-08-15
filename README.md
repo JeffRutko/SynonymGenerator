@@ -53,6 +53,14 @@ Open **http://127.0.0.1:7860** (use `localhost` or `127.0.0.1`, not `0.0.0.0`).
 
 Defaults: `HOST=127.0.0.1`, `PORT=7860`. For containers, set `HOST=0.0.0.0`.
 
+### Social / LinkedIn preview
+
+The homepage includes Open Graph tags. After deploy, the share image is:
+
+`https://YOUR-APP.up.railway.app/static/og-image.png`
+
+LinkedIn **Projects** usually need a manual media upload — download that PNG and attach it to the project. For link-share previews, refresh the scrape with [LinkedIn Post Inspector](https://www.linkedin.com/post-inspector/).
+
 ### Environment variables
 
 | Name | Required | Notes |
