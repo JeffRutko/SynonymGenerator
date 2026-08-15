@@ -1,6 +1,15 @@
 .venv/
 .env
+.env.*
+!.env.example
 __pycache__/
 *.py[cod]
+*$py.class
 .idea/
+.vscode/
 .python-version
+*.pem
+*.key
+credentials.json
+.DS_Store
+Thumbs.db

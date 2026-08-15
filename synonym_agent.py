@@ -375,7 +375,7 @@ async def generate_synonyms_stream(
         yield (
             (
                 "**Error:** `HF_TOKEN` is not set. "
-                "Add it as a Space secret (or in a local `.env` file)."
+                "Add it to your local `.env` file (or host environment)."
             ),
             "",
         )

@@ -1,9 +1,72 @@
 # Conceptual Search Helper
 
-FastAPI app that uses a Strands agent with MCP search tools
-(`telecom_search`, `patent_search`, and related tools) plus RAG (MongoDB Atlas
-when configured, otherwise ephemeral Chroma) to propose synonyms, **CPC
-subgroups**, and Boolean search strings for telecom / patent concepts.
+AI assistant for telecom and patent prior-art research. Enter a concept (and an optional CPC / domain hint) and get:
+
+- Synonym families and related terminology
+- **CPC subgroups** (not just section-level codes)
+- Boolean search-string variants
+- Brief notes on why terms and codes fit
+
+Built with **FastAPI**, a **Strands** agent, **MCP** search/embed tools, and optional **MongoDB Atlas** RAG caching. Progress and markdown results stream over **Server-Sent Events**.
+
+## How it works
+
+```
+User → Web UI → FastAPI (SSE)
+                    │
+         ┌──────────┴──────────┐
+         ▼                     ▼
+   Cache check           Full pipeline
+ (synonym_outputs)             │
+         │                     ▼
+    hit → stream        Gather MCP sources
+                        (telecom / patent / web)
+                               │
+                               ▼
+                         Chunk passages
+                               │
+                               ▼
+                    Embed + Vector Search
+                     (Cohere + Atlas)
+                               │
+                               ▼
+                      Strands agent
+                   (DeepSeek via HF)
+                   + optional tool calls
+                               │
+                               ▼
+                    Cache report → SSE UI
+```
+
+Without `MONGODB_URI`, the same pipeline runs with an ephemeral in-memory Chroma store (no persistent cache).
+
+## Quick start
+
+```bash
+uv sync
+cp .env.example .env
+# set HF_TOKEN (and optionally MONGODB_URI) in .env
+uv run python app.py
+```
+
+Open **http://127.0.0.1:7860** (use `localhost` or `127.0.0.1`, not `0.0.0.0`).
+
+Defaults: `HOST=127.0.0.1`, `PORT=7860`. For containers, set `HOST=0.0.0.0`.
+
+### Environment variables
+
+| Name | Required | Notes |
+|------|----------|--------|
+| `HF_TOKEN` | Yes | Hugging Face token for the Inference Router / model in `models/models.py` |
+| `MONGODB_URI` | No | Atlas `mongodb+srv://…`; when unset, RAG uses ephemeral Chroma only |
+| `MONGODB_DB_NAME` | No | Default `synonym_generator` |
+| `MONGODB_CACHE_TTL_HOURS` | No | Soft cache window for app reads; default `168` (7 days) |
+| `MONGODB_VECTOR_INDEX_NAME` | No | Default `chunk_vectors_vector_index` |
+| `MONGODB_VECTOR_DIMENSIONS` | No | Default `1024` (must match Cohere embed + Atlas index) |
+
+MCP server URLs (search + Cohere embed/rerank) and the model ID live in [`models/models.py`](models/models.py).
+
+**Do not commit secrets.** Keep credentials in `.env` (gitignored) or your host’s secret store. See [`.env.example`](.env.example).
 
 ## Usage
 
@@ -11,49 +74,37 @@ subgroups**, and Boolean search strings for telecom / patent concepts.
 2. Optionally add a domain or CPC hint (for example, `H04W`).
 3. Click **Generate search help**.
 
-Streaming progress and markdown results arrive over `POST /v1/search` (SSE).
+Streaming progress and markdown arrive from `POST /v1/search` (SSE).
 
 Optional JSON field `"force_refresh": true` bypasses MongoDB caches for that request.
 
-## Local development
+### Smoke checks
 
 ```bash
-uv sync
-# put HF_TOKEN and MONGODB_URI in a local .env
-uv run python app.py
-```
-
-MongoDB Atlas connection test:
-
-```bash
+# MongoDB Atlas connection
 uv run python scripts/test_mongo_connection.py
-```
 
-Atlas Vector Search index test:
-
-```bash
+# Atlas Vector Search index
 uv run python scripts/test_vector_search.py
+
+# API health
+curl -s http://127.0.0.1:7860/health
+
+# CLI agent path
+uv run python agent.py
 ```
 
-Open **http://127.0.0.1:7860** (or `localhost`). Do not use `http://0.0.0.0:7860` — browsers reject that address.
+## MongoDB caching (optional)
 
-Defaults: `HOST=127.0.0.1`, `PORT=7860`. For container deploys set `HOST=0.0.0.0`.
+When `MONGODB_URI` is set, repeat searches reuse:
 
-| Name | Required | Notes |
-|------|----------|--------|
-| `HF_TOKEN` | Yes | Hugging Face Inference Router / model used in `models/models.py` |
-| `MONGODB_URI` | No | Atlas `mongodb+srv://…`; when unset, RAG uses ephemeral Chroma only |
-| `MONGODB_DB_NAME` | No | Default `synonym_generator` |
-| `MONGODB_CACHE_TTL_HOURS` | No | Default `168` (7 days) for cached sources/outputs |
-| `MONGODB_VECTOR_INDEX_NAME` | No | Default `chunk_vectors_vector_index` |
-| `MONGODB_VECTOR_DIMENSIONS` | No | Default `1024` (must match Cohere embed + Atlas index) |
+| Collection | Contents |
+|------------|----------|
+| `source_documents` | Cached MCP source text per tool |
+| `chunk_vectors` | Chunk text + embeddings (Vector Search) |
+| `synonym_outputs` | Final markdown reports |
 
-MCP server URLs (search + Cohere embed/rerank) and the model ID live in
-`models/models.py`.
-
-With MongoDB configured, repeat searches cache MCP source text, chunk
-embeddings, and final reports under the same concept + context. Without
-MongoDB, each request uses in-memory Chroma only.
+Cache keys are derived from concept + context. Soft expiry uses `expires_at` / `MONGODB_CACHE_TTL_HOURS`. For physical deletion in Atlas, configure a TTL index separately (for example on `created_at`).
 
 ### Atlas Vector Search index
 
@@ -78,61 +129,37 @@ Create on collection `chunk_vectors` (Atlas Search → JSON Editor):
 }
 ```
 
-If `$vectorSearch` is unavailable, the app falls back to in-process cosine
-similarity over cached embeddings.
-
-CLI smoke test:
-
-```bash
-uv run python agent.py
-```
-
-API smoke check:
-
-```bash
-curl -s http://127.0.0.1:7860/health
-```
+If `$vectorSearch` is unavailable, the app falls back to in-process cosine similarity over cached embeddings.
 
 ## Deploy (Railway)
 
-The repo includes [`railway.toml`](railway.toml), [`nixpacks.toml`](nixpacks.toml),
-and [`Procfile`](Procfile). Nixpacks installs from [`requirements.txt`](requirements.txt)
-(not `uv.lock`) and starts:
+The repo includes [`railway.toml`](railway.toml), [`nixpacks.toml`](nixpacks.toml), and [`Procfile`](Procfile). Nixpacks installs from [`requirements.txt`](requirements.txt) (not `uv.lock`) and starts:
 
 ```bash
 uvicorn app:app --host 0.0.0.0 --port $PORT
 ```
 
-### 1. Connect GitHub
-
 1. [Railway](https://railway.app) → **New Project** → **Deploy from GitHub repo**
-2. Select `JeffRutko/SynonymGenerator` (branch `master`)
-3. **Settings → Networking** → **Generate Domain** (e.g. `your-app.up.railway.app`)
-
-No Railway MongoDB plugin — use Atlas via `MONGODB_URI`.
-
-### 2. Environment variables
-
-Railway → service → **Variables**:
+2. Select this repository (`master`)
+3. **Settings → Networking** → **Generate Domain**
+4. Set variables (below). Do **not** set `HOST` or `PORT` — the start command already uses `$PORT`.
 
 | Name | Required | Notes |
 |------|----------|-------|
 | `HF_TOKEN` | Yes | Same token used locally |
-| `MONGODB_URI` | Yes | Atlas `mongodb+srv://…` connection string |
+| `MONGODB_URI` | Yes for persistent cache | Atlas connection string |
 | `MONGODB_DB_NAME` | No | Default `synonym_generator` |
 | `MONGODB_CACHE_TTL_HOURS` | No | Default `168` |
 | `MONGODB_VECTOR_INDEX_NAME` | No | Default `chunk_vectors_vector_index` |
 | `MONGODB_VECTOR_DIMENSIONS` | No | Default `1024` |
 
-Do **not** set `HOST` or `PORT` — the start command already uses `$PORT`.
+### Atlas (one-time)
 
-### 3. Atlas (one-time)
+- **Network Access:** allow Railway egress (`0.0.0.0/0` or Railway static IPs)
+- **Vector Search index** on `chunk_vectors` (see above)
+- DB user in the URI needs read/write on the database
 
-- **Network Access:** allow Railway egress (`0.0.0.0/0` or Railway static IP)
-- **Vector Search index** on `chunk_vectors` — see [Atlas Vector Search index](#atlas-vector-search-index) above
-- DB user in the URI needs read/write on `synonym_generator`
-
-### 4. Verify deploy
+### Verify
 
 ```bash
 curl -s https://YOUR-APP.up.railway.app/health
@@ -141,18 +168,25 @@ curl -s https://YOUR-APP.up.railway.app/health
 uv run python scripts/check_deploy_health.py https://YOUR-APP.up.railway.app
 ```
 
-Open `https://YOUR-APP.up.railway.app/`, run a search, then repeat the same query to
-confirm MongoDB caching (second run should be much faster).
-
-### Troubleshooting
-
-| `/health` mongo value | Cause |
-|-----------------------|-------|
+| `/health` `mongo` value | Meaning |
+|-------------------------|---------|
 | `connected` | OK |
-| `disabled` | `MONGODB_URI` not set on Railway |
+| `disabled` | `MONGODB_URI` not set |
 | `error` | Atlas network/auth failure — check Railway logs and Atlas IP allowlist |
 
-**`No replica set members found yet` / `ReplicaSetNoPrimary` with `server_type: Unknown`:** Railway cannot open TCP to Atlas (almost always Network Access). In Atlas → **Network Access** → **Add IP Address** → allow `0.0.0.0/0` (or your Railway static egress IPs), wait a minute, then redeploy or hit `/health` again. Also confirm `MONGODB_URI` is the full `mongodb+srv://…` string and the DB user password has no unescaped special characters.
+**`No replica set members found yet` / `ReplicaSetNoPrimary`:** almost always Atlas Network Access. Allow `0.0.0.0/0` (or Railway egress IPs), wait a minute, then retry `/health`. Confirm `MONGODB_URI` is a full `mongodb+srv://…` string and that special characters in the password are URL-encoded.
 
-MCP servers (search + Cohere embed) and the HF model ID are configured in
-[`models/models.py`](models/models.py); they require outbound HTTPS from Railway.
+MCP servers and the HF model need outbound HTTPS from Railway.
+
+## Stack
+
+- **API / UI:** FastAPI, SSE, static frontend
+- **Agent:** Strands + Hugging Face Inference Router (DeepSeek)
+- **Tools:** MCP — `telecom_search`, `patent_search`, `web_text_search`, Cohere `embed_texts` / `rerank_documents`
+- **RAG:** chunking, embeddings, Atlas Vector Search (or ephemeral Chroma)
+- **Data:** MongoDB Atlas (optional multi-layer cache)
+- **Deploy:** Railway + Nixpacks
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
