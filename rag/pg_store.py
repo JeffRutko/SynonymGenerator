@@ -1,4 +1,4 @@
-"""Atlas-backed vector store with MCP embed/rerank."""
+"""Neon-backed vector store with MCP embed/rerank."""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ from rag.store import DEFAULT_SHORTLIST, RetrievedChunk
 logger = logging.getLogger(__name__)
 
 
-class MongoVectorStore:
-    """Persist chunks in Atlas and retrieve via Vector Search."""
+class PostgresVectorStore:
+    """Persist chunks in Neon and retrieve via pgvector."""
 
     def __init__(
         self,
@@ -41,14 +41,14 @@ class MongoVectorStore:
             self._mcp, texts, input_type="search_document"
         )
         if (
-            models.MONGODB_ENABLED
+            models.DB_ENABLED
             and embeddings
-            and len(embeddings[0]) != models.MONGODB_VECTOR_DIMENSIONS
+            and len(embeddings[0]) != models.DB_VECTOR_DIMENSIONS
         ):
             logger.info(
-                "Embedding dimension is %s (MONGODB_VECTOR_DIMENSIONS=%s)",
+                "Embedding dimension is %s (DB_VECTOR_DIMENSIONS=%s)",
                 len(embeddings[0]),
-                models.MONGODB_VECTOR_DIMENSIONS,
+                models.DB_VECTOR_DIMENSIONS,
             )
 
         return await chunk_vectors_repo.upsert_chunks(

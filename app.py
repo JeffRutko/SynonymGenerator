@@ -26,13 +26,13 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if models.MONGODB_ENABLED:
+    if models.DB_ENABLED:
         try:
             await db_client.connect()
         except Exception as exc:
-            logger.error("MongoDB startup connect failed: %s", exc)
+            logger.error("PostgreSQL startup connect failed: %s", exc)
     yield
-    if models.MONGODB_ENABLED:
+    if models.DB_ENABLED:
         await db_client.disconnect()
 
 
@@ -47,13 +47,13 @@ class SearchRequest(BaseModel):
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    if not models.MONGODB_ENABLED:
-        mongo_status = "disabled"
+    if not models.DB_ENABLED:
+        db_status = "disabled"
     elif await db_client.ping():
-        mongo_status = "connected"
+        db_status = "connected"
     else:
-        mongo_status = "error"
-    return {"status": "ok", "mongo": mongo_status}
+        db_status = "error"
+    return {"status": "ok", "db": db_status}
 
 
 @app.post("/v1/search")

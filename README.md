@@ -7,7 +7,7 @@ AI assistant for telecom and patent prior-art research. Enter a concept (and an 
 - Boolean search-string variants
 - Brief notes on why terms and codes fit
 
-Built with **FastAPI**, a **Strands** agent, **MCP** search/embed tools, and optional **MongoDB Atlas** RAG caching. Progress and markdown results stream over **Server-Sent Events**.
+Built with **FastAPI**, a **Strands** agent, **MCP** search/embed tools, and optional **Neon PostgreSQL** RAG caching. Progress and markdown results stream over **Server-Sent Events**.
 
 ## How it works
 
@@ -17,7 +17,7 @@ User → Web UI → FastAPI (SSE)
          ┌──────────┴──────────┐
          ▼                     ▼
    Cache check           Full pipeline
- (synonym_outputs)             │
+ (syn_synonym_outputs)          │
          │                     ▼
     hit → stream        Gather MCP sources
                         (telecom / patent / web)
@@ -27,7 +27,7 @@ User → Web UI → FastAPI (SSE)
                                │
                                ▼
                     Embed + Vector Search
-                     (Cohere + Atlas)
+                     (Cohere + pgvector)
                                │
                                ▼
                       Strands agent
@@ -38,14 +38,14 @@ User → Web UI → FastAPI (SSE)
                     Cache report → SSE UI
 ```
 
-Without `MONGODB_URI`, the same pipeline runs with an ephemeral in-memory Chroma store (no persistent cache).
+Without `DATABASE_URL`, the same pipeline runs with an ephemeral in-memory Chroma store (no persistent cache).
 
 ## Quick start
 
 ```bash
 uv sync
 cp .env.example .env
-# set HF_TOKEN (and optionally MONGODB_URI) in .env
+# set HF_TOKEN (and optionally DATABASE_URL) in .env
 uv run python app.py
 ```
 
@@ -66,11 +66,9 @@ LinkedIn **Projects** usually need a manual media upload — download that PNG a
 | Name | Required | Notes |
 |------|----------|--------|
 | `HF_TOKEN` | Yes | Hugging Face token for the Inference Router / model in `models/models.py` |
-| `MONGODB_URI` | No | Atlas `mongodb+srv://…`; when unset, RAG uses ephemeral Chroma only |
-| `MONGODB_DB_NAME` | No | Default `synonym_generator` |
-| `MONGODB_CACHE_TTL_HOURS` | No | Soft cache window for app reads; default `168` (7 days) |
-| `MONGODB_VECTOR_INDEX_NAME` | No | Default `chunk_vectors_vector_index` |
-| `MONGODB_VECTOR_DIMENSIONS` | No | Default `1024` (must match Cohere embed + Atlas index) |
+| `DATABASE_URL` | No | Neon `postgresql://…` (pooler URL recommended); when unset, RAG uses ephemeral Chroma only |
+| `DB_CACHE_TTL_HOURS` | No | Soft cache window for app reads; default `168` (7 days) |
+| `DB_VECTOR_DIMENSIONS` | No | Default `1024` (must match Cohere embed + pgvector column) |
 
 MCP server URLs (search + Cohere embed/rerank) and the model ID live in [`models/models.py`](models/models.py).
 
@@ -84,15 +82,15 @@ MCP server URLs (search + Cohere embed/rerank) and the model ID live in [`models
 
 Streaming progress and markdown arrive from `POST /v1/search` (SSE).
 
-Optional JSON field `"force_refresh": true` bypasses MongoDB caches for that request.
+Optional JSON field `"force_refresh": true` bypasses database caches for that request.
 
 ### Smoke checks
 
 ```bash
-# MongoDB Atlas connection
-uv run python scripts/test_mongo_connection.py
+# Neon PostgreSQL connection (+ creates syn_* tables on first connect)
+uv run python scripts/test_db_connection.py
 
-# Atlas Vector Search index
+# pgvector search on syn_chunk_vectors
 uv run python scripts/test_vector_search.py
 
 # API health
@@ -102,42 +100,17 @@ curl -s http://127.0.0.1:7860/health
 uv run python agent.py
 ```
 
-## MongoDB caching (optional)
+## PostgreSQL caching (optional)
 
-When `MONGODB_URI` is set, repeat searches reuse:
+When `DATABASE_URL` is set, repeat searches reuse:
 
-| Collection | Contents |
-|------------|----------|
-| `source_documents` | Cached MCP source text per tool |
-| `chunk_vectors` | Chunk text + embeddings (Vector Search) |
-| `synonym_outputs` | Final markdown reports |
+| Table | Contents |
+|-------|----------|
+| `syn_source_documents` | Cached MCP source text per tool |
+| `syn_chunk_vectors` | Chunk text + embeddings (pgvector HNSW) |
+| `syn_synonym_outputs` | Final markdown reports |
 
-Cache keys are derived from concept + context. Soft expiry uses `expires_at` / `MONGODB_CACHE_TTL_HOURS`. For physical deletion in Atlas, configure a TTL index separately (for example on `created_at`).
-
-### Atlas Vector Search index
-
-Create on collection `chunk_vectors` (Atlas Search → JSON Editor):
-
-```json
-{
-  "name": "chunk_vectors_vector_index",
-  "type": "vectorSearch",
-  "fields": [
-    {
-      "type": "vector",
-      "path": "embedding",
-      "numDimensions": 1024,
-      "similarity": "cosine"
-    },
-    {
-      "type": "filter",
-      "path": "query_key"
-    }
-  ]
-}
-```
-
-If `$vectorSearch` is unavailable, the app falls back to in-process cosine similarity over cached embeddings.
+Cache keys are derived from concept + context. Soft expiry uses `expires_at` / `DB_CACHE_TTL_HOURS`. Tables are created automatically on startup via [`db/migrations/001_syn_tables.sql`](db/migrations/001_syn_tables.sql).
 
 ## Deploy (Railway)
 
@@ -155,34 +128,24 @@ uvicorn app:app --host 0.0.0.0 --port $PORT
 | Name | Required | Notes |
 |------|----------|-------|
 | `HF_TOKEN` | Yes | Same token used locally |
-| `MONGODB_URI` | Yes for persistent cache | Atlas connection string |
-| `MONGODB_DB_NAME` | No | Default `synonym_generator` |
-| `MONGODB_CACHE_TTL_HOURS` | No | Default `168` |
-| `MONGODB_VECTOR_INDEX_NAME` | No | Default `chunk_vectors_vector_index` |
-| `MONGODB_VECTOR_DIMENSIONS` | No | Default `1024` |
-
-### Atlas (one-time)
-
-- **Network Access:** allow Railway egress (`0.0.0.0/0` or Railway static IPs)
-- **Vector Search index** on `chunk_vectors` (see above)
-- DB user in the URI needs read/write on the database
+| `DATABASE_URL` | Yes for persistent cache | Neon connection string (use pooler endpoint) |
+| `DB_CACHE_TTL_HOURS` | No | Default `168` |
+| `DB_VECTOR_DIMENSIONS` | No | Default `1024` |
 
 ### Verify
 
 ```bash
 curl -s https://YOUR-APP.up.railway.app/health
-# {"status":"ok","mongo":"connected"}
+# {"status":"ok","db":"connected"}
 
 uv run python scripts/check_deploy_health.py https://YOUR-APP.up.railway.app
 ```
 
-| `/health` `mongo` value | Meaning |
-|-------------------------|---------|
+| `/health` `db` value | Meaning |
+|----------------------|---------|
 | `connected` | OK |
-| `disabled` | `MONGODB_URI` not set |
-| `error` | Atlas network/auth failure — check Railway logs and Atlas IP allowlist |
-
-**`No replica set members found yet` / `ReplicaSetNoPrimary`:** almost always Atlas Network Access. Allow `0.0.0.0/0` (or Railway egress IPs), wait a minute, then retry `/health`. Confirm `MONGODB_URI` is a full `mongodb+srv://…` string and that special characters in the password are URL-encoded.
+| `disabled` | `DATABASE_URL` not set |
+| `error` | Connection failure — check Railway logs and Neon credentials |
 
 MCP servers and the HF model need outbound HTTPS from Railway.
 
@@ -191,8 +154,8 @@ MCP servers and the HF model need outbound HTTPS from Railway.
 - **API / UI:** FastAPI, SSE, static frontend
 - **Agent:** Strands + Hugging Face Inference Router (DeepSeek)
 - **Tools:** MCP — `telecom_search`, `patent_search`, `web_text_search`, Cohere `embed_texts` / `rerank_documents`
-- **RAG:** chunking, embeddings, Atlas Vector Search (or ephemeral Chroma)
-- **Data:** MongoDB Atlas (optional multi-layer cache)
+- **RAG:** chunking, embeddings, pgvector (or ephemeral Chroma)
+- **Data:** Neon PostgreSQL (optional multi-layer cache in `syn_*` tables)
 - **Deploy:** Railway + Nixpacks
 
 ## License

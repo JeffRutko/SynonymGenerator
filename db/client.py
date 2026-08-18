@@ -1,114 +1,98 @@
-"""Async MongoDB client (Motor) for Atlas."""
+"""Async PostgreSQL client (Neon) for syn_* cache tables."""
 
 from __future__ import annotations
 
 import logging
+from pathlib import Path
+
+import asyncpg
+from pgvector.asyncpg import register_vector
 
 from models import models
-from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 
 logger = logging.getLogger(__name__)
 
-_client: AsyncIOMotorClient | None = None
-SERVER_SELECTION_TIMEOUT_MS = 10_000
+_pool: asyncpg.Pool | None = None
+MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 
-SOURCE_DOCUMENTS = "source_documents"
-CHUNK_VECTORS = "chunk_vectors"
-SYNONYM_OUTPUTS = "synonym_outputs"
+SYN_SOURCE_DOCUMENTS = "syn_source_documents"
+SYN_CHUNK_VECTORS = "syn_chunk_vectors"
+SYN_SYNONYM_OUTPUTS = "syn_synonym_outputs"
 
 
-def _reset_client() -> None:
-    global _client
-    if _client is not None:
-        try:
-            _client.close()
-        except Exception:
-            pass
-        _client = None
+async def _init_connection(conn: asyncpg.Connection) -> None:
+    await register_vector(conn)
 
 
 async def connect() -> None:
-    """Open the Motor client and ensure collection indexes."""
-    global _client
-    if not models.MONGODB_ENABLED:
+    """Open the connection pool and ensure syn_* tables exist."""
+    global _pool
+    if not models.DB_ENABLED:
         return
-    if _client is not None:
+    if _pool is not None:
         return
 
-    client = AsyncIOMotorClient(
-        models.MONGODB_URI,
-        serverSelectionTimeoutMS=SERVER_SELECTION_TIMEOUT_MS,
+    pool = await asyncpg.create_pool(
+        models.DATABASE_URL,
+        min_size=1,
+        max_size=5,
+        command_timeout=30,
+        init=_init_connection,
     )
     try:
-        await client.admin.command("ping")
-        _client = client
-        await _ensure_indexes()
-        logger.info("MongoDB connected (database=%s)", models.MONGODB_DB_NAME)
+        async with pool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
+        _pool = pool
+        await _apply_migrations()
+        logger.info("PostgreSQL connected (syn_* tables)")
     except Exception:
-        try:
-            client.close()
-        except Exception:
-            pass
-        _client = None
+        await pool.close()
+        _pool = None
         raise
 
 
 async def disconnect() -> None:
-    """Close the Motor client."""
-    _reset_client()
+    """Close the connection pool."""
+    global _pool
+    if _pool is not None:
+        await _pool.close()
+        _pool = None
 
 
-def get_client() -> AsyncIOMotorClient:
-    if _client is None:
-        raise RuntimeError("MongoDB is not connected; call connect() first")
-    return _client
-
-
-def get_db() -> AsyncIOMotorDatabase:
-    return get_client()[models.MONGODB_DB_NAME]
+def get_pool() -> asyncpg.Pool:
+    if _pool is None:
+        raise RuntimeError("Database is not connected; call connect() first")
+    return _pool
 
 
 async def ping() -> bool:
-    """Return True if MongoDB is reachable (retries connect if needed)."""
-    if not models.MONGODB_ENABLED:
+    """Return True if PostgreSQL is reachable (retries connect if needed)."""
+    if not models.DB_ENABLED:
         return False
-    if _client is None:
+    if _pool is None:
         try:
             await connect()
         except Exception as exc:
-            logger.warning("MongoDB reconnect failed: %s", exc)
+            logger.warning("PostgreSQL reconnect failed: %s", exc)
             return False
     try:
-        await _client.admin.command("ping")
+        async with _pool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
         return True
     except Exception:
-        _reset_client()
+        await disconnect()
         return False
 
 
-async def _ensure_indexes() -> None:
-    db = get_db()
-
-    await db[SOURCE_DOCUMENTS].create_index(
-        [("query_key", 1), ("tool_name", 1)],
-        unique=True,
-        name="query_key_tool_name_unique",
-    )
-    await db[SYNONYM_OUTPUTS].create_index(
-        [("query_key", 1)],
-        unique=True,
-        name="query_key_unique",
-    )
-    await db[SYNONYM_OUTPUTS].create_index(
-        [("created_at", -1)],
-        name="created_at_desc",
-    )
-    await db[CHUNK_VECTORS].create_index(
-        [("query_key", 1), ("chunk_id", 1)],
-        unique=True,
-        name="query_key_chunk_id_unique",
-    )
-    await db[CHUNK_VECTORS].create_index(
-        [("query_key", 1)],
-        name="query_key",
-    )
+async def _apply_migrations() -> None:
+    migration_file = MIGRATIONS_DIR / "001_syn_tables.sql"
+    if not migration_file.is_file():
+        logger.warning("Migration file not found: %s", migration_file)
+        return
+    sql = migration_file.read_text(encoding="utf-8")
+    statements = [s.strip() for s in sql.split(";") if s.strip()]
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        for statement in statements:
+            await conn.execute(statement)
+    logger.info("Applied migration %s", migration_file.name)

@@ -1,4 +1,5 @@
 import os
+from urllib.parse import quote_plus
 
 
 MCP_SERVER_URLS = [
@@ -9,9 +10,49 @@ MCP_SERVER_URLS = [
 HF_BASE_URL = "https://router.huggingface.co/v1"
 HF_MODEL_ID = "deepseek-ai/DeepSeek-V4-Flash-0731:deepinfra"
 
-MONGODB_URI = os.environ.get("MONGODB_URI", "").strip()
-MONGODB_DB_NAME = os.environ.get("MONGODB_DB_NAME", "synonym_generator")
-MONGODB_ENABLED = bool(MONGODB_URI)
+
+def _normalize_database_url(raw: str) -> str:
+    url = raw.strip().strip('"').strip("'")
+    while url.upper().startswith("DATABASE_URL="):
+        url = url.split("=", 1)[1].strip()
+    if url.startswith("jdbc:"):
+        url = url[5:]
+    return url
+
+
+def _is_placeholder_url(url: str) -> bool:
+    lower = url.lower()
+    return (
+        "user:password" in lower
+        or "<password>" in lower
+        or "<user>" in lower
+        or "your_password" in lower
+    )
+
+
+def _build_database_url_from_pg_env() -> str:
+    user = os.environ.get("PGUSER", "").strip()
+    password = os.environ.get("PGPASSWORD", "").strip()
+    host = os.environ.get("PGHOST", "").strip()
+    port = os.environ.get("PGPORT", "5432").strip() or "5432"
+    database = os.environ.get("PGDATABASE", "neondb").strip() or "neondb"
+    if not all([user, password, host]):
+        return ""
+    return (
+        f"postgresql://{quote_plus(user)}:{quote_plus(password)}"
+        f"@{host}:{port}/{database}?sslmode=require"
+    )
+
+
+def _resolve_database_url() -> str:
+    direct = _normalize_database_url(os.environ.get("DATABASE_URL", ""))
+    if direct and not _is_placeholder_url(direct):
+        return direct
+    return _build_database_url_from_pg_env()
+
+
+DATABASE_URL = _resolve_database_url()
+DB_ENABLED = bool(DATABASE_URL)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -24,11 +65,8 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-MONGODB_CACHE_TTL_HOURS = _env_int("MONGODB_CACHE_TTL_HOURS", 168)
-MONGODB_VECTOR_INDEX_NAME = os.environ.get(
-    "MONGODB_VECTOR_INDEX_NAME", "chunk_vectors_vector_index"
-)
-MONGODB_VECTOR_DIMENSIONS = _env_int("MONGODB_VECTOR_DIMENSIONS", 1024)
+DB_CACHE_TTL_HOURS = _env_int("DB_CACHE_TTL_HOURS", 168)
+DB_VECTOR_DIMENSIONS = _env_int("DB_VECTOR_DIMENSIONS", 1024)
 
 
 def create_hf_model():

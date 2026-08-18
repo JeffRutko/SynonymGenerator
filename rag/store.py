@@ -28,7 +28,7 @@ class EphemeralRagStore:
     """In-memory Chroma collection for a single request."""
 
     def __init__(self, mcp_client: MCPClient) -> None:
-        # Lazy: chromadb/onnxruntime are heavy; skip import when Mongo RAG is used.
+        # Lazy: chromadb/onnxruntime are heavy; skip import when Postgres RAG is used.
         import chromadb
 
         self._mcp = mcp_client

@@ -31,7 +31,7 @@ async def iter_gather_mcp_documents(
     """
     query = _build_search_query(concept, context)
     use_cache = (
-        models.MONGODB_ENABLED
+        models.DB_ENABLED
         and query_key is not None
         and not force_refresh
     )
@@ -63,7 +63,7 @@ async def iter_gather_mcp_documents(
             if not raw_text:
                 yield f"`{tool_name}` returned no text."
                 continue
-            if models.MONGODB_ENABLED and query_key is not None:
+            if models.DB_ENABLED and query_key is not None:
                 await source_documents_repo.upsert(
                     query_key=query_key,
                     concept=concept,

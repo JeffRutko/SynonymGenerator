@@ -4,40 +4,43 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from db.cache_utils import cache_expires_at, not_expired_filter
-from db.client import SOURCE_DOCUMENTS, get_db
+from db.cache_utils import cache_expires_at, not_expired_sql
+from db.client import SYN_SOURCE_DOCUMENTS, get_pool
 from models import models
 from rag.constants import GATHER_TOOLS
 
 
 async def get_cached_raw_text(query_key: str, tool_name: str) -> str | None:
-    if not models.MONGODB_ENABLED:
+    if not models.DB_ENABLED:
         return None
-    doc = await get_db()[SOURCE_DOCUMENTS].find_one(
-        {
-            "query_key": query_key,
-            "tool_name": tool_name,
-            **not_expired_filter(),
-        },
-        projection={"raw_text": 1},
+    row = await get_pool().fetchrow(
+        f"""
+        SELECT raw_text FROM {SYN_SOURCE_DOCUMENTS}
+        WHERE query_key = $1 AND tool_name = $2 AND {not_expired_sql()}
+        """,
+        query_key,
+        tool_name,
     )
-    if not doc:
+    if not row:
         return None
-    text = doc.get("raw_text")
+    text = row["raw_text"]
     return str(text) if text else None
 
 
 async def has_all_cached(query_key: str) -> bool:
-    if not models.MONGODB_ENABLED:
+    if not models.DB_ENABLED:
         return False
-    count = await get_db()[SOURCE_DOCUMENTS].count_documents(
-        {
-            "query_key": query_key,
-            "tool_name": {"$in": list(GATHER_TOOLS)},
-            **not_expired_filter(),
-        }
+    row = await get_pool().fetchrow(
+        f"""
+        SELECT COUNT(*) AS n FROM {SYN_SOURCE_DOCUMENTS}
+        WHERE query_key = $1
+          AND tool_name = ANY($2::text[])
+          AND {not_expired_sql()}
+        """,
+        query_key,
+        list(GATHER_TOOLS),
     )
-    return count == len(GATHER_TOOLS)
+    return int(row["n"]) == len(GATHER_TOOLS) if row else False
 
 
 async def upsert(
@@ -48,21 +51,27 @@ async def upsert(
     tool_name: str,
     raw_text: str,
 ) -> None:
-    if not models.MONGODB_ENABLED:
+    if not models.DB_ENABLED:
         return
     now = datetime.now(UTC)
-    await get_db()[SOURCE_DOCUMENTS].update_one(
-        {"query_key": query_key, "tool_name": tool_name},
-        {
-            "$set": {
-                "query_key": query_key,
-                "concept": concept,
-                "context": context,
-                "tool_name": tool_name,
-                "raw_text": raw_text,
-                "created_at": now,
-                "expires_at": cache_expires_at(),
-            }
-        },
-        upsert=True,
+    await get_pool().execute(
+        f"""
+        INSERT INTO {SYN_SOURCE_DOCUMENTS} (
+            query_key, tool_name, concept, context, raw_text, created_at, expires_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (query_key, tool_name) DO UPDATE SET
+            concept = EXCLUDED.concept,
+            context = EXCLUDED.context,
+            raw_text = EXCLUDED.raw_text,
+            created_at = EXCLUDED.created_at,
+            expires_at = EXCLUDED.expires_at
+        """,
+        query_key,
+        tool_name,
+        concept,
+        context,
+        raw_text,
+        now,
+        cache_expires_at(),
     )

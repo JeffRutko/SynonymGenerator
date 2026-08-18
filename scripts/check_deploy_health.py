@@ -49,18 +49,18 @@ def main() -> None:
         print("Error: status is not 'ok'", file=sys.stderr)
         sys.exit(1)
 
-    mongo = payload.get("mongo")
-    if mongo == "connected":
-        print("MongoDB: connected")
-    elif mongo == "disabled":
+    db = payload.get("db")
+    if db == "connected":
+        print("PostgreSQL: connected")
+    elif db == "disabled":
         print(
-            "Warning: MongoDB disabled (MONGODB_URI not set on host).",
+            "Warning: database disabled (DATABASE_URL not set on host).",
             file=sys.stderr,
         )
         sys.exit(1)
     else:
         print(
-            f"Error: MongoDB status is {mongo!r} (expected 'connected').",
+            f"Error: database status is {db!r} (expected 'connected').",
             file=sys.stderr,
         )
         sys.exit(1)

@@ -1,1 +1,1 @@
-"""MongoDB repository modules."""
+"""PostgreSQL repository modules."""

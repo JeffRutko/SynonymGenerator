@@ -26,7 +26,7 @@ from rag import (
 )
 from rag.chunking import TextChunk
 from rag.gather import iter_gather_mcp_documents
-from rag.mongo_store import MongoVectorStore
+from rag.pg_store import PostgresVectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +49,8 @@ class RagResult:
     passages: str
 
 
-async def _ensure_mongo() -> None:
-    if models.MONGODB_ENABLED:
+async def _ensure_db() -> None:
+    if models.DB_ENABLED:
         await db_client.connect()
 
 
@@ -199,29 +199,29 @@ async def iter_rag_pipeline(
 
     query = f"{concept.strip()} {context.strip()}".strip()
     vectors_cached = False
-    if models.MONGODB_ENABLED and force_refresh:
+    if models.DB_ENABLED and force_refresh:
         deleted = await chunk_vectors_repo.delete_by_query_key(query_key)
         if deleted:
             yield f"Cleared {deleted} cached vector(s) (force_refresh)."
-    elif models.MONGODB_ENABLED:
+    elif models.DB_ENABLED:
         vectors_cached = await chunk_vectors_repo.has_vectors(query_key)
 
     try:
-        if models.MONGODB_ENABLED:
-            store: MongoVectorStore | EphemeralRagStore = MongoVectorStore(
+        if models.DB_ENABLED:
+            store: PostgresVectorStore | EphemeralRagStore = PostgresVectorStore(
                 cohere_client,
                 query_key,
                 vectors_cached=vectors_cached,
             )
             if vectors_cached:
-                yield f"Using {len(chunks)} cached chunks from MongoDB."
+                yield f"Using {len(chunks)} cached chunks from database."
             else:
                 yield (
                     f"Embedding {len(chunks)} chunks via `embed_texts` "
                     f"(input_type=search_document)…"
                 )
             indexed = await store.add_chunks(chunks)
-            yield f"Indexed {indexed} chunks in MongoDB."
+            yield f"Indexed {indexed} chunks in database."
 
             yield (
                 "Embedding query via `embed_texts` "
@@ -327,7 +327,7 @@ async def _generate_synonyms_async(
     *,
     force_refresh: bool,
 ) -> str:
-    await _ensure_mongo()
+    await _ensure_db()
     query_key = make_query_key(concept, context)
 
     with mcp_session() as (search_client, cohere_client):
@@ -344,7 +344,7 @@ async def _generate_synonyms_async(
         result = agent(prompt)
         answer = str(result)
 
-    if models.MONGODB_ENABLED:
+    if models.DB_ENABLED:
         try:
             await synonym_outputs_repo.upsert(
                 query_key=query_key,
@@ -381,17 +381,17 @@ async def generate_synonyms_stream(
         )
         return
 
-    await _ensure_mongo()
+    await _ensure_db()
     query_key = make_query_key(concept, context)
 
-    if models.MONGODB_ENABLED and not force_refresh:
+    if models.DB_ENABLED and not force_refresh:
         try:
             cached = await synonym_outputs_repo.get_cached(query_key)
         except Exception as exc:
             logger.warning("Output cache lookup failed: %s", exc)
             cached = None
         if cached is not None:
-            progress = cached.progress or "Loaded cached report from MongoDB."
+            progress = cached.progress or "Loaded cached report from database."
             if not progress.startswith("- "):
                 progress = f"- {progress}\n- Done."
             yield (progress, cached.answer)
@@ -445,7 +445,7 @@ async def generate_synonyms_stream(
             status_lines.append("Done.")
             yield progress(), answer
 
-            if models.MONGODB_ENABLED:
+            if models.DB_ENABLED:
                 try:
                     await synonym_outputs_repo.upsert(
                         query_key=query_key,
