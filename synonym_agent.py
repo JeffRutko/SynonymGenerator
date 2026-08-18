@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -34,9 +35,13 @@ SYSTEM_PROMPT = """You are a conceptual search helper for telecom and patent pri
 
 Produce rich, structured markdown reports: component-wise synonym families, multiple Boolean search-string variants that include CPC subgroup symbols (e.g. H04W36/00, not only H04W), a Relevant CPC subgroups list, and brief notes on why terms work.
 
+Start the user-visible answer with a markdown H1 (for example `# Conceptual Search Report: …`). Do not include chain-of-thought, planning, or “let me look up” prose in the answer.
+
 When retrieved passages are provided, treat them as supporting evidence and seeds for expansion — not a closed vocabulary. Prefer 3GPP, IEEE, and patent-style phrasing. Use tools (including CPC/IPC scheme lookups via web_text_search when needed) to identify precise subgroups.
 
-Honor any CPC / domain hints the user supplies, and drill down to subgroup level in search strings."""
+Honor any CPC / domain hints the user supplies, and drill down to subgroup level in search strings.
+
+Boolean strings must use only executable operators (AND, OR, NEAR/n or W/n, truncation *). Never invent operators such as NEAR/NOT-STOPWORDS. CPC symbols must be complete subgroups (H04B7/0480, not H04B7/048). Do not treat “CPC” as a machine-learning synonym (it means Cooperative Patent Classification). Flag adjacent classes (for example neural channel estimation vs CSI compression) as secondary, not core."""
 
 EMBED_TOOL = "embed_texts"
 SEARCH_TOOL = "telecom_search"
@@ -138,6 +143,44 @@ def create_agent_with_tools(
         tools=tools,
         callback_handler=callback_handler,
     )
+
+
+_REASONING_EVENT_KEYS = frozenset(
+    {
+        "reasoning",
+        "reasoningText",
+        "reasoning_content",
+        "thinking",
+        "thought",
+    }
+)
+_REPORT_HEADING = re.compile(r"(?m)^#{1,3}\s+\S")
+_GLUED_HEADING = re.compile(r"(?<=[.!?])(#{1,3}\s+\S)")
+
+
+def _is_reasoning_event(event: dict) -> bool:
+    if any(event.get(key) for key in _REASONING_EVENT_KEYS):
+        return True
+    kind = str(event.get("type") or event.get("event_type") or "").lower()
+    return "reason" in kind or "thinking" in kind
+
+
+def strip_reasoning_preamble(text: str) -> str:
+    """Drop chain-of-thought that appears before the first markdown heading."""
+    if not text:
+        return ""
+    normalized = re.sub(r"(?i)let me write the report\.\s*", "\n", text)
+    match = _REPORT_HEADING.search(normalized)
+    if match:
+        return normalized[match.start() :].lstrip()
+    glued = _GLUED_HEADING.search(normalized)
+    if glued:
+        return normalized[glued.start() :].lstrip()
+    return ""
+
+
+def _visible_report(raw: str) -> str:
+    return strip_reasoning_preamble(raw)
 
 
 def _tool_name(tool: object) -> str:
@@ -342,7 +385,7 @@ async def _generate_synonyms_async(
         prompt = build_prompt(concept, context, passages)
         agent = create_agent_with_tools(search_client, callback_handler=None)
         result = agent(prompt)
-        answer = str(result)
+        answer = _visible_report(str(result)) or str(result)
 
     if models.DB_ENABLED:
         try:
@@ -394,7 +437,7 @@ async def generate_synonyms_stream(
             progress = cached.progress or "Loaded cached report from database."
             if not progress.startswith("- "):
                 progress = f"- {progress}\n- Done."
-            yield (progress, cached.answer)
+            yield (progress, _visible_report(cached.answer) or cached.answer)
             return
 
     status_lines: list[str] = ["Connecting to MCP servers…"]
@@ -431,19 +474,22 @@ async def generate_synonyms_stream(
             agent = create_agent_with_tools(search_client, callback_handler=None)
 
             async for event in agent.stream_async(prompt):
+                if _is_reasoning_event(event):
+                    continue
                 tool = event.get("current_tool_use") or {}
                 tool_name = tool.get("name")
                 if tool_name and tool_name not in seen_tools:
                     seen_tools.add(tool_name)
                     status_lines.append(f"Agent calling tool: `{tool_name}`")
-                    yield progress(), answer
+                    yield progress(), _visible_report(answer)
 
                 if "data" in event and event["data"]:
                     answer += event["data"]
-                    yield progress(), answer
+                    yield progress(), _visible_report(answer)
 
+            report = _visible_report(answer) or answer
             status_lines.append("Done.")
-            yield progress(), answer
+            yield progress(), report
 
             if models.DB_ENABLED:
                 try:
@@ -451,7 +497,7 @@ async def generate_synonyms_stream(
                         query_key=query_key,
                         concept=concept,
                         context=context,
-                        answer=answer,
+                        answer=report,
                         progress=progress(),
                         tools_used=sorted(seen_tools),
                     )
@@ -459,4 +505,4 @@ async def generate_synonyms_stream(
                     logger.warning("Failed to cache synonym output: %s", exc)
     except Exception as exc:
         status_lines.append(f"Failed: {exc}")
-        yield progress(), answer
+        yield progress(), _visible_report(answer) or answer

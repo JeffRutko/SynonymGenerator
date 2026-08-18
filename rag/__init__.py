@@ -59,15 +59,15 @@ def build_rag_prompt(concept: str, context: str, passages: str) -> str:
         )
 
     parts.append(
-        """Write a rich markdown report with this structure:
+        """Write a rich markdown report with this structure. Start with a markdown H1. Do not include planning or chain-of-thought in the answer.
 
 1. **Concept gloss** — 1–3 sentences clarifying the technical meaning.
-2. **Synonyms by component** — Decompose the concept into entities, actions, and technical objects. For each component, list synonym families (tables or bullets). Include telecom / 3GPP / patent phrasing and generation-specific aliases when relevant (e.g. eNB, gNB, UE, MS).
-3. **Relevant CPC subgroups** — List specific CPC subgroup symbols (e.g. H04W36/00, H04W28/06), not only section/class codes like H04W. Include a one-line title/meaning for each when known. Use the user's CPC hint and tools (e.g. web_text_search for CPC scheme) when unsure.
+2. **Synonyms by component** — Decompose the concept into entities, actions, and technical objects. For each component, list synonym families (tables or bullets). Include telecom / 3GPP / patent phrasing and generation-specific aliases when relevant (e.g. eNB, gNB, UE, MS). Do not list Cooperative Patent Classification (CPC) as a machine-learning synonym.
+3. **Relevant CPC subgroups** — List complete subgroup symbols (e.g. H04W36/00, H04B7/0480), not truncated forms like H04B7/048 and not only section/class codes like H04W. Include a one-line title/meaning for each when known. Mark adjacent classes (e.g. neural channel estimation vs the core concept) as secondary. Use the user's CPC hint and tools (e.g. web_text_search for CPC scheme) when unsure.
 4. **Recommended Boolean search strings** — Provide three variants. Each variant must incorporate CPC subgroup symbols via AND/OR (e.g. (...terms...) AND (H04W36/00 OR H04W36/08)):
    - Full Boolean (high precision)
    - Compact practical string
-   - Patent-style string
+   - Patent-style string using only executable operators (AND, OR, NEAR/n or W/n, truncation *). Never invent operators such as NEAR/NOT-STOPWORDS.
 5. **Key terminology notes** — Brief “why these terms work,” citing passage `source_tool` labels and/or standards/patent language.
 
 Do not limit yourself only to words that appear verbatim in the passages; expand with closely related domain terminology that would help literature and patent search. Prefer subgroup-level CPC over class-only codes in the search strings."""
