@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator
@@ -13,6 +14,7 @@ from db.repositories import source_documents as source_documents_repo
 from models import models
 from rag.chunking import TextChunk, chunk_text
 from rag.constants import GATHER_TOOLS
+
 ProgressCallback = Callable[[str], None]
 
 
@@ -35,43 +37,70 @@ async def iter_gather_mcp_documents(
         and query_key is not None
         and not force_refresh
     )
-    chunks: list[TextChunk] = []
 
-    for tool_name in GATHER_TOOLS:
-        before = len(chunks)
-        raw_text: str | None = None
+    raw_by_tool: dict[str, str | None] = {name: None for name in GATHER_TOOLS}
 
-        if use_cache:
-            raw_text = await source_documents_repo.get_cached_raw_text(
-                query_key, tool_name
+    if use_cache:
+        cached = await asyncio.gather(
+            *(
+                source_documents_repo.get_cached_raw_text(query_key, tool_name)
+                for tool_name in GATHER_TOOLS
             )
+        )
+        for tool_name, raw_text in zip(GATHER_TOOLS, cached, strict=True):
             if raw_text:
+                raw_by_tool[tool_name] = raw_text
                 yield f"Using cached `{tool_name}`…"
 
-        if raw_text is None:
-            yield f"Calling search tool: `{tool_name}`…"
-            try:
-                result = mcp_client.call_tool_sync(
+    miss_tools = [name for name in GATHER_TOOLS if raw_by_tool[name] is None]
+    if miss_tools:
+        tool_list = ", ".join(f"`{name}`" for name in miss_tools)
+        yield f"Calling search tools in parallel: {tool_list}…"
+
+        results = await asyncio.gather(
+            *(
+                mcp_client.call_tool_async(
                     tool_use_id=str(uuid.uuid4()),
                     name=tool_name,
                     arguments={"query": query},
                 )
-            except Exception as exc:
-                yield f"`{tool_name}` failed ({exc}); skipping."
+                for tool_name in miss_tools
+            ),
+            return_exceptions=True,
+        )
+
+        to_upsert: list[tuple[str, str]] = []
+        for tool_name, result in zip(miss_tools, results, strict=True):
+            if isinstance(result, BaseException):
+                yield f"`{tool_name}` failed ({result}); skipping."
                 continue
             raw_text = _tool_result_to_text(result)
             if not raw_text:
                 yield f"`{tool_name}` returned no text."
                 continue
-            if models.DB_ENABLED and query_key is not None:
-                await source_documents_repo.upsert(
-                    query_key=query_key,
-                    concept=concept,
-                    context=context,
-                    tool_name=tool_name,
-                    raw_text=raw_text,
-                )
+            raw_by_tool[tool_name] = raw_text
+            to_upsert.append((tool_name, raw_text))
 
+        if to_upsert and models.DB_ENABLED and query_key is not None:
+            await asyncio.gather(
+                *(
+                    source_documents_repo.upsert(
+                        query_key=query_key,
+                        concept=concept,
+                        context=context,
+                        tool_name=tool_name,
+                        raw_text=raw_text,
+                    )
+                    for tool_name, raw_text in to_upsert
+                )
+            )
+
+    chunks: list[TextChunk] = []
+    for tool_name in GATHER_TOOLS:
+        raw_text = raw_by_tool[tool_name]
+        if not raw_text:
+            continue
+        before = len(chunks)
         chunks.extend(
             chunk_text(raw_text, source_tool=tool_name, query=query)
         )
@@ -93,7 +122,6 @@ def iter_gather_mcp_documents_sync(
     force_refresh: bool = False,
 ) -> Iterator[str | list[TextChunk]]:
     """Sync wrapper for the async gather iterator."""
-    import asyncio
 
     async def _collect() -> list[str | list[TextChunk]]:
         items: list[str | list[TextChunk]] = []
