@@ -38,14 +38,14 @@ User → Web UI → FastAPI (SSE)
                     Cache report → SSE UI
 ```
 
-Without `DATABASE_URL`, the same pipeline runs with an ephemeral in-memory Chroma store (no persistent cache).
+Without a resolved Neon connection (`DATABASE_URL` or `PG*` vars), the same pipeline runs with an ephemeral in-memory Chroma store (no persistent cache).
 
 ## Quick start
 
 ```bash
 uv sync
 cp .env.example .env
-# set HF_TOKEN (and optionally DATABASE_URL) in .env
+# set HF_TOKEN; optionally set PG* vars or DATABASE_URL for Neon caching
 uv run python app.py
 ```
 
@@ -66,11 +66,14 @@ LinkedIn **Projects** usually need a manual media upload — download that PNG a
 | Name | Required | Notes |
 |------|----------|--------|
 | `HF_TOKEN` | Yes | Hugging Face token for the Inference Router / model in `models/models.py` |
-| `DATABASE_URL` | No | Neon `postgresql://…` (pooler URL recommended); when unset, RAG uses ephemeral Chroma only |
+| `PGUSER`, `PGPASSWORD`, `PGHOST` | No | Preferred local Neon setup (see `.env.example`); also accepts `PGPORT` (default `5432`) and `PGDATABASE` (default `neondb`) |
+| `DATABASE_URL` | No | Alternative: full `postgresql://…` string (pooler URL recommended; URL-encode special characters in the password). Used if set; otherwise built from `PG*` |
 | `DB_CACHE_TTL_HOURS` | No | Soft cache window for app reads; default `168` (7 days) |
 | `DB_VECTOR_DIMENSIONS` | No | Default `1024` (must match Cohere embed + pgvector column) |
 
-MCP server URLs (search + Cohere embed/rerank) and the model ID live in [`models/models.py`](models/models.py).
+When neither `DATABASE_URL` nor the required `PG*` vars are set, RAG uses ephemeral Chroma only. Resolution logic lives in [`models/models.py`](models/models.py).
+
+MCP server URLs (search + Cohere embed/rerank) and the model ID also live in [`models/models.py`](models/models.py).
 
 **Do not commit secrets.** Keep credentials in `.env` (gitignored) or your host’s secret store. See [`.env.example`](.env.example).
 
@@ -102,7 +105,7 @@ uv run python agent.py
 
 ## PostgreSQL caching (optional)
 
-When `DATABASE_URL` is set, repeat searches reuse:
+When Neon is configured (`DATABASE_URL` or `PG*` vars), repeat searches reuse:
 
 | Table | Contents |
 |-------|----------|
@@ -144,7 +147,7 @@ uv run python scripts/check_deploy_health.py https://YOUR-APP.up.railway.app
 | `/health` `db` value | Meaning |
 |----------------------|---------|
 | `connected` | OK |
-| `disabled` | `DATABASE_URL` not set |
+| `disabled` | No Neon connection configured (`DATABASE_URL` / `PG*` unset) |
 | `error` | Connection failure — check Railway logs and Neon credentials |
 
 MCP servers and the HF model need outbound HTTPS from Railway.
