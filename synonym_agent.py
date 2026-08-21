@@ -41,7 +41,7 @@ When retrieved passages are provided, treat them as supporting evidence and seed
 
 Honor any CPC / domain hints the user supplies, and drill down to subgroup level in search strings.
 
-Boolean strings must use only executable operators (AND, OR, NEAR/n or W/n, truncation *). Never invent operators such as NEAR/NOT-STOPWORDS. CPC symbols must be complete subgroups (H04B7/0480, not H04B7/048). Do not treat “CPC” as a machine-learning synonym (it means Cooperative Patent Classification). Flag adjacent classes (for example neural channel estimation vs CSI compression) as secondary, not core."""
+Boolean / patent strings must target USPTO Patent Public Search (examiner-style) syntax: AND, OR, NOT, ADJn, NEARn, WITH, SAME, and truncation * or $n. Write proximity without a slash (NEAR15, ADJ4 — never NEAR/15 or W/10). Do not invent operators (W/n, AROUND(n), NEAR/NOT-STOPWORDS, etc.). CPC symbols must be complete subgroups (H04B7/0480, not H04B7/048). Do not treat “CPC” as a machine-learning synonym (it means Cooperative Patent Classification). Flag adjacent classes (for example neural channel estimation vs CSI compression) as secondary, not core."""
 
 EMBED_TOOL = "embed_texts"
 SEARCH_TOOL = "telecom_search"
