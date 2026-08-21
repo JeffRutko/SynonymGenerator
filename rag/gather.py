@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator
 from typing import Any
@@ -14,6 +15,8 @@ from db.repositories import source_documents as source_documents_repo
 from models import models
 from rag.chunking import TextChunk, chunk_text
 from rag.constants import GATHER_TOOLS
+
+logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[str], None]
 
@@ -48,9 +51,18 @@ async def iter_gather_mcp_documents(
             )
         )
         for tool_name, raw_text in zip(GATHER_TOOLS, cached, strict=True):
-            if raw_text:
-                raw_by_tool[tool_name] = raw_text
-                yield f"Using cached `{tool_name}`…"
+            if not raw_text:
+                continue
+            if _looks_like_tool_error_text(raw_text):
+                logger.warning(
+                    "Ignoring cached error payload for %s (query_key=%s)",
+                    tool_name,
+                    query_key,
+                )
+                yield f"Cached `{tool_name}` is an error payload; refetching…"
+                continue
+            raw_by_tool[tool_name] = raw_text
+            yield f"Using cached `{tool_name}`…"
 
     miss_tools = [name for name in GATHER_TOOLS if raw_by_tool[name] is None]
     if miss_tools:
@@ -74,9 +86,22 @@ async def iter_gather_mcp_documents(
             if isinstance(result, BaseException):
                 yield f"`{tool_name}` failed ({result}); skipping."
                 continue
+            if _mcp_result_is_error(result):
+                detail = _tool_result_to_text(result) or "unknown error"
+                logger.warning("%s returned MCP error: %s", tool_name, detail[:300])
+                yield f"`{tool_name}` failed ({detail[:120]}); skipping."
+                continue
             raw_text = _tool_result_to_text(result)
             if not raw_text:
                 yield f"`{tool_name}` returned no text."
+                continue
+            if _looks_like_tool_error_text(raw_text):
+                logger.warning(
+                    "%s returned error payload (not caching): %s",
+                    tool_name,
+                    raw_text[:300],
+                )
+                yield f"`{tool_name}` failed ({raw_text[:120]}); skipping."
                 continue
             raw_by_tool[tool_name] = raw_text
             to_upsert.append((tool_name, raw_text))
@@ -196,6 +221,57 @@ def _tool_result_to_text(result: Any) -> str:
         parts.append(_stringify(structured))
 
     return "\n".join(p for p in parts if p and p.strip())
+
+
+def _mcp_result_is_error(result: Any) -> bool:
+    """True when the MCP CallToolResult is marked as an error."""
+    if isinstance(result, dict):
+        return bool(result.get("isError") or result.get("is_error"))
+    return bool(
+        getattr(result, "isError", False) or getattr(result, "is_error", False)
+    )
+
+
+def _looks_like_tool_error_text(text: str) -> bool:
+    """
+    Detect search-tool failure payloads returned as content.
+
+    Tavily/MCP often returns JSON like ``[{"error": "Connection aborted..."}]``
+    or ``{"error": "..."}`` instead of raising; those must not be cached.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return False
+
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        # Doubled quotes from some serializers: [{""error"":""...""}]
+        try:
+            parsed = json.loads(stripped.replace('""', '"'))
+        except json.JSONDecodeError:
+            return False
+
+    return _payload_is_error_only(parsed)
+
+
+def _payload_is_error_only(value: Any) -> bool:
+    if isinstance(value, dict):
+        if "error" not in value:
+            return False
+        # Pure failure object, or error with no usable search body.
+        useful = ("results", "documents", "content", "answer", "text", "hits")
+        return not any(value.get(k) for k in useful)
+
+    if isinstance(value, list):
+        if not value:
+            return False
+        return all(
+            isinstance(item, dict) and "error" in item and _payload_is_error_only(item)
+            for item in value
+        )
+
+    return False
 
 
 def _stringify(value: Any) -> str:
