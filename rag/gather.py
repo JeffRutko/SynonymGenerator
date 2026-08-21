@@ -20,6 +20,25 @@ logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[str], None]
 
+# Parallel gather often trips transient Tavily/MCP disconnects; retry those.
+GATHER_MAX_ATTEMPTS = 3
+GATHER_RETRY_BASE_DELAY_S = 1.0
+_TRANSIENT_ERROR_MARKERS = (
+    "connection aborted",
+    "remotedisconnected",
+    "unexpected_eof",
+    "ssleoferror",
+    "sslerror",
+    "max retries exceeded",
+    "connection reset",
+    "temporarily unavailable",
+    "timed out",
+    "timeout",
+    "503",
+    "502",
+    "504",
+)
+
 
 async def iter_gather_mcp_documents(
     mcp_client: MCPClient,
@@ -69,42 +88,57 @@ async def iter_gather_mcp_documents(
         tool_list = ", ".join(f"`{name}`" for name in miss_tools)
         yield f"Calling search tools in parallel: {tool_list}…"
 
-        results = await asyncio.gather(
-            *(
-                mcp_client.call_tool_async(
-                    tool_use_id=str(uuid.uuid4()),
-                    name=tool_name,
-                    arguments={"query": query},
-                )
-                for tool_name in miss_tools
-            ),
-            return_exceptions=True,
-        )
-
+        # First attempt in parallel; retry transient failures together.
+        pending = list(miss_tools)
         to_upsert: list[tuple[str, str]] = []
-        for tool_name, result in zip(miss_tools, results, strict=True):
-            if isinstance(result, BaseException):
-                yield f"`{tool_name}` failed ({result}); skipping."
-                continue
-            if _mcp_result_is_error(result):
-                detail = _tool_result_to_text(result) or "unknown error"
-                logger.warning("%s returned MCP error: %s", tool_name, detail[:300])
-                yield f"`{tool_name}` failed ({detail[:120]}); skipping."
-                continue
-            raw_text = _tool_result_to_text(result)
-            if not raw_text:
-                yield f"`{tool_name}` returned no text."
-                continue
-            if _looks_like_tool_error_text(raw_text):
-                logger.warning(
-                    "%s returned error payload (not caching): %s",
-                    tool_name,
-                    raw_text[:300],
+
+        for attempt in range(1, GATHER_MAX_ATTEMPTS + 1):
+            if attempt > 1:
+                delay = GATHER_RETRY_BASE_DELAY_S * (2 ** (attempt - 2))
+                names = ", ".join(f"`{n}`" for n in pending)
+                yield (
+                    f"Transient failure on {names}; "
+                    f"retry {attempt}/{GATHER_MAX_ATTEMPTS} in {delay:.0f}s…"
                 )
-                yield f"`{tool_name}` failed ({raw_text[:120]}); skipping."
-                continue
-            raw_by_tool[tool_name] = raw_text
-            to_upsert.append((tool_name, raw_text))
+                await asyncio.sleep(delay)
+
+            results = await asyncio.gather(
+                *(
+                    _call_search_tool(mcp_client, tool_name, query)
+                    for tool_name in pending
+                ),
+                return_exceptions=True,
+            )
+
+            still_pending: list[str] = []
+            for tool_name, result in zip(pending, results, strict=True):
+                ok_text, err_msg, transient = _classify_tool_outcome(result)
+                if ok_text is not None:
+                    raw_by_tool[tool_name] = ok_text
+                    to_upsert.append((tool_name, ok_text))
+                    if attempt > 1:
+                        yield f"`{tool_name}` succeeded on retry {attempt}."
+                    continue
+
+                if transient and attempt < GATHER_MAX_ATTEMPTS:
+                    still_pending.append(tool_name)
+                else:
+                    suffix = (
+                        f" after {attempt} attempts"
+                        if attempt > 1
+                        else ""
+                    )
+                    logger.warning(
+                        "%s failed%s: %s",
+                        tool_name,
+                        suffix,
+                        (err_msg or "")[:300],
+                    )
+                    yield f"`{tool_name}` failed{suffix} ({err_msg}); skipping."
+
+            pending = still_pending
+            if not pending:
+                break
 
         if to_upsert and models.DB_ENABLED and query_key is not None:
             await asyncio.gather(
@@ -195,6 +229,49 @@ def _build_search_query(concept: str, context: str) -> str:
     if context:
         return f"{concept} {context}"
     return concept
+
+
+async def _call_search_tool(
+    mcp_client: MCPClient,
+    tool_name: str,
+    query: str,
+) -> Any:
+    return await mcp_client.call_tool_async(
+        tool_use_id=str(uuid.uuid4()),
+        name=tool_name,
+        arguments={"query": query},
+    )
+
+
+def _classify_tool_outcome(
+    result: Any,
+) -> tuple[str | None, str, bool]:
+    """
+    Return (ok_text, error_message, is_transient).
+
+    ``ok_text`` is set only for usable search content.
+    """
+    if isinstance(result, BaseException):
+        msg = str(result) or result.__class__.__name__
+        return None, msg, _is_transient_error_text(msg)
+
+    if _mcp_result_is_error(result):
+        detail = _tool_result_to_text(result) or "unknown MCP error"
+        return None, detail, _is_transient_error_text(detail)
+
+    raw_text = _tool_result_to_text(result)
+    if not raw_text:
+        return None, "returned no text", False
+
+    if _looks_like_tool_error_text(raw_text):
+        return None, raw_text, _is_transient_error_text(raw_text)
+
+    return raw_text, "", False
+
+
+def _is_transient_error_text(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in _TRANSIENT_ERROR_MARKERS)
 
 
 def _tool_result_to_text(result: Any) -> str:
