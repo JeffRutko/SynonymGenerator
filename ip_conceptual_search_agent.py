@@ -31,11 +31,11 @@ from rag.pg_store import PostgresVectorStore
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are a conceptual search helper for telecom and patent prior-art research.
+SYSTEM_PROMPT = """You are an IP conceptual search helper for telecom and patent prior-art research.
 
 Produce rich, structured markdown reports: component-wise synonym families, multiple Boolean search-string variants that include CPC subgroup symbols (e.g. H04W36/00, not only H04W), a Relevant CPC subgroups list, and brief notes on why terms work.
 
-Start the user-visible answer with a markdown H1 (for example `# Conceptual Search Report: …`). Do not include chain-of-thought, planning, or “let me look up” prose in the answer.
+Start the user-visible answer with a markdown H1 (for example `# IP Conceptual Search Report: …`). Do not include chain-of-thought, planning, or “let me look up” prose in the answer.
 
 When retrieved passages are provided, treat them as supporting evidence and seeds for expansion — not a closed vocabulary. Prefer 3GPP, IEEE, and patent-style phrasing. Use tools (including CPC/IPC scheme lookups via web_text_search when needed) to identify precise subgroups.
 

@@ -1,4 +1,4 @@
-"""Conceptual Search Helper — FastAPI + SSE UI."""
+"""IP Conceptual Search Helper — FastAPI + SSE UI."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ async def lifespan(app: FastAPI):
         await db_client.disconnect()
 
 
-app = FastAPI(title="Conceptual Search Helper", lifespan=lifespan)
+app = FastAPI(title="IP Conceptual Search Helper", lifespan=lifespan)
 
 
 class SearchRequest(BaseModel):
@@ -59,7 +59,7 @@ async def health() -> dict[str, str]:
 @app.post("/v1/search")
 async def search(body: SearchRequest) -> StreamingResponse:
     # Import on demand so /health can pass without loading strands/chromadb.
-    from synonym_agent import generate_synonyms_stream
+    from ip_conceptual_search_agent import generate_synonyms_stream
 
     async def event_stream():
         async for progress, answer in generate_synonyms_stream(

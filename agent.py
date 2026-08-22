@@ -1,4 +1,4 @@
-from synonym_agent import generate_synonyms
+from ip_conceptual_search_agent import generate_synonyms
 
 
 def main() -> None:

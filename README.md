@@ -1,4 +1,4 @@
-# Conceptual Search Helper
+# IP Conceptual Search Helper
 
 AI assistant for telecom and patent prior-art research. Enter a concept (and an optional CPC / domain hint) and get:
 

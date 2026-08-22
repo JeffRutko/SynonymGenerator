@@ -1,4 +1,4 @@
-"""Live RAG helpers for the synonym agent."""
+"""Live RAG helpers for the IP conceptual search agent."""
 
 from rag.chunking import TextChunk, chunk_text
 from rag.embeddings import embed_texts
